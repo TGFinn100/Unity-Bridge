@@ -27,3 +27,8 @@ logged with date, Unity version, and 10 timing entries.
   last-modified timestamp in `.claude/hooks/.todo-mtime-state.json` after
   each commit and warns on the next commit if the mtime hasn't advanced.
   Chosen by the user over git-initializing the sandbox or dropping the check.
+- **2026-07-17 — hook-firing verification pending.** Phase 0 and Phase 1
+  commits both went through without `.claude/hooks/.todo-mtime-state.json`
+  being created, meaning the PreToolUse hook never actually ran for either.
+  Running the prescribed real check now: commit in this session, confirm the
+  state file appears.
