@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEditor;
+using UnityEditor.Compilation;
 using UnityEngine;
 
 namespace UnityBridge.Editor
@@ -43,6 +44,7 @@ namespace UnityBridge.Editor
             RegisterEndpoints();
             StartListener();
             EditorApplication.update += Tick;
+            CompilationPipeline.compilationStarted += OnCompilationStarted;
             AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
             EditorApplication.quitting += OnQuitting;
         }
@@ -137,6 +139,22 @@ namespace UnityBridge.Editor
                     return;
                 }
 
+                if (endpoint.Tier == "meta")
+                {
+                    // Meta-tier endpoints (/ping, /help) only read pre-cached,
+                    // thread-safe state and never call into the Unity API, so
+                    // they're answered directly on this background thread
+                    // instead of the main-thread queue below. This matters
+                    // because Unity can run a "forced synchronous recompile"
+                    // that blocks EditorApplication.update (and therefore
+                    // Tick()) for the whole compile+reload — routing meta
+                    // requests through that queue would make readyState
+                    // "compiling" unobservable exactly when it's needed.
+                    var directResult = InvokeHandler(endpoint, topic);
+                    WriteJson(ctx, directResult.Status, directResult.Body);
+                    return;
+                }
+
                 var pending = new PendingRequest
                 {
                     Endpoint = endpoint,
@@ -206,28 +224,38 @@ namespace UnityBridge.Editor
 
             while (_queue.TryDequeue(out var pending))
             {
-                try
-                {
-                    var body = pending.Endpoint.Handler(new BridgeRequestContext(pending.Topic));
-                    pending.Tcs.TrySetResult(new BridgeHandlerResult { Status = 200, Body = body });
-                }
-                catch (BridgeHttpException httpEx)
-                {
-                    pending.Tcs.TrySetResult(new BridgeHandlerResult
-                    {
-                        Status = httpEx.StatusCode,
-                        Body = new Dictionary<string, object> { { "error", httpEx.Message } }
-                    });
-                }
-                catch (Exception ex)
-                {
-                    pending.Tcs.TrySetResult(new BridgeHandlerResult
-                    {
-                        Status = 500,
-                        Body = new Dictionary<string, object> { { "error", ex.Message } }
-                    });
-                }
+                pending.Tcs.TrySetResult(InvokeHandler(pending.Endpoint, pending.Topic));
             }
+        }
+
+        static BridgeHandlerResult InvokeHandler(EndpointInfo endpoint, string topic)
+        {
+            try
+            {
+                var body = endpoint.Handler(new BridgeRequestContext(topic));
+                return new BridgeHandlerResult { Status = 200, Body = body };
+            }
+            catch (BridgeHttpException httpEx)
+            {
+                return new BridgeHandlerResult
+                {
+                    Status = httpEx.StatusCode,
+                    Body = new Dictionary<string, object> { { "error", httpEx.Message } }
+                };
+            }
+            catch (Exception ex)
+            {
+                return new BridgeHandlerResult
+                {
+                    Status = 500,
+                    Body = new Dictionary<string, object> { { "error", ex.Message } }
+                };
+            }
+        }
+
+        static void OnCompilationStarted(object obj)
+        {
+            BridgeState.MarkCompiling();
         }
 
         static void OnBeforeAssemblyReload()
@@ -246,5 +274,7 @@ namespace UnityBridge.Editor
             try { _listener?.Stop(); } catch { }
             try { _listener?.Close(); } catch { }
         }
+
+        // gate1-torture-marker: 10 — trivial no-op comment toggled by gate1-torture.sh each cycle to force a recompile
     }
 }

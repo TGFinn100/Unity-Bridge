@@ -33,6 +33,17 @@ namespace UnityBridge.Editor
             SetReadyState("reloading");
         }
 
+        // Event-driven, unlike RefreshFromMainThread's isCompiling check: that
+        // check only runs inside Tick() (EditorApplication.update), which Unity
+        // throttles while the Editor is unfocused and can miss entirely if
+        // compilation finishes before the next tick. CompilationPipeline fires
+        // this synchronously on the main thread the instant compilation starts,
+        // so it can't be raced out the same way.
+        internal static void MarkCompiling()
+        {
+            SetReadyState("compiling");
+        }
+
         // Logged so transitions that are too fast to catch with a manual
         // browser refresh (e.g. a trivial one-file recompile) are still
         // visible afterward in the Console / Logs/Editor.log.
