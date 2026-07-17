@@ -144,3 +144,66 @@ tracked correctly internally but never delivered over HTTP). See DECISIONS.
   regardless of the encoding passed) but works against the LOCKED
   "grep/diff-friendly" design goal for a naive line-based tool. Fixed with
   a shared `new UTF8Encoding(false)` constant.
+- **2026-07-17 — Phase 3: `GlobalObjectId.GlobalObjectIdentifierToInstanceIDSlow`
+  and `EditorUtility.InstanceIDToObject(int)` are hard-deprecated
+  (`error CS0619`, not a warning) in Unity 6000.5.2f1.** `GET /object/{id}`
+  originally used the InstanceID-based overloads (the documented API at
+  the time the task brief was written); this Unity version's compiler
+  rejects them outright. Switched to the newer EntityId-based pair,
+  `GlobalObjectIdentifierToEntityIdSlow` / `EntityIdToObject`, same
+  resolve-or-null contract. Not a deviation from any LOCKED behavior —
+  the HTTP-visible contract (id in, object or 404 out) is unchanged — but
+  worth recording since it's a Unity-version-forced API swap a future
+  reader would otherwise have to rediscover from a compiler error.
+- **2026-07-17 — Phase 3 ID stability-class contract: CONFIRMED, no
+  deviation.** The brief's Phase 3 verification task (human-verification
+  3.6) asked us to confirm by hand whether saved scene-object IDs actually
+  survive a domain reload and a play-mode enter/exit round trip as
+  claimed. Tested against `SampleScene`'s `Global Volume` object: same
+  `GlobalObjectId` resolved correctly (no 404, no `"volatile": true`)
+  before a script-edit-triggered reload, after it, and again after a full
+  play-mode enter/exit cycle. The LOCKED contract stands as written —
+  nothing to amend.
+- **2026-07-17 — `GET /logs/tail` reads Console entries via a
+  self-maintained ring buffer fed by `Application.logMessageReceivedThreaded`,
+  not Unity's internal `LogEntries` reflection API.** The internal API
+  (used by Unity's own Console window) would also capture entries logged
+  before the bridge started, but it's an undocumented, version-fragile
+  surface reached only via reflection. The public event only captures
+  entries logged after the bridge starts listening — acceptable, since the
+  bridge is already running before any agent session begins. Ordered
+  newest-first in the response (a v1 readability choice, not LOCKED either
+  way) since an agent tailing logs right after a change wants the most
+  recent entry first.
+- **2026-07-17 — `GET /object/{id}?components=values` only expands
+  serialized fields for the root object's own components, never for
+  entries under `children`, even at `depth=2`.** The brief doesn't specify
+  whether `values` applies tree-wide; recursing full field values into a
+  whole subtree would work against the context-efficiency pillar the rest
+  of the API is built around, so `componentNames` (not full values) is
+  what children ever get. A caller that wants a child's own field values
+  makes a follow-up `/object/{childId}?components=values` call.
+- **2026-07-17 — `GET /object/{id}`'s volatile-object heuristic: a
+  `GlobalObjectId` with an all-zero `assetGUID` is marked `"volatile": true`.**
+  This is Unity's documented signal for a non-persistent object (never
+  saved to a scene/prefab file — e.g. instantiated at runtime, or living
+  in a scene that itself was never saved). Confirmed consistent with the
+  LOCKED ID stability-class contract by the 3.6 verification above (saved
+  objects never got flagged volatile); not separately exercised against an
+  actual runtime-instantiated object in this pass, since 3.6 only called
+  for saved-object survival, not the volatile-flagging path itself.
+- **2026-07-17 — `BridgeRequestContext` gained a `Query` field (GET query
+  string parsing) in Phase 3, first needed by `/object/{id}`'s
+  `depth`/`components` and `/logs/tail`'s `n`/`severity`.** Parsed with a
+  small hand-rolled splitter in `BridgeServer.cs` rather than
+  `System.Web.HttpUtility` — not reliably available under Unity's Editor
+  assembly API compatibility level, consistent with this codebase already
+  writing its own `MiniJson` instead of pulling in a JSON library.
+- **2026-07-17 — `GET /playmode`'s `elapsedSeconds` persists play-mode
+  entry time to `Library/UnityBridge/playmode_entered` instead of a static
+  field.** A domain reload (the common case on play-mode entry) resets all
+  static state, which would zero the elapsed-time clock right as play mode
+  starts. The handler always reads the marker file directly rather than
+  caching a timestamp, so it's correct regardless of whether a reload
+  happened, whether Configurable Enter Play Mode skipped it, or whether an
+  unrelated mid-session script recompile reran the static constructor.

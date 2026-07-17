@@ -16,6 +16,7 @@ namespace UnityBridge.Editor
         public EndpointInfo Endpoint;
         public string Topic;
         public Dictionary<string, object> Body;
+        public IReadOnlyDictionary<string, string> Query;
         public TaskCompletionSource<BridgeHandlerResult> Tcs;
         public DateTime EnqueuedAt;
     }
@@ -49,6 +50,8 @@ namespace UnityBridge.Editor
             CompilationPipeline.compilationStarted += OnCompilationStarted;
             AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
             EditorApplication.quitting += OnQuitting;
+            EditorApplication.playModeStateChanged += PlaymodeEndpoint.OnPlayModeStateChanged;
+            Application.logMessageReceivedThreaded += LogBuffer.OnLogMessage;
         }
 
         static void RegisterEndpoints()
@@ -57,6 +60,10 @@ namespace UnityBridge.Editor
             HelpEndpoint.Register();
             QueryEndpoint.Register();
             AssetEndpoint.Register();
+            SceneSummaryEndpoint.Register();
+            ObjectEndpoint.Register();
+            LogsTailEndpoint.Register();
+            PlaymodeEndpoint.Register();
         }
 
         static void StartListener()
@@ -133,6 +140,7 @@ namespace UnityBridge.Editor
 
                 string method = ctx.Request.HttpMethod;
                 string path = ctx.Request.Url.AbsolutePath;
+                IReadOnlyDictionary<string, string> query = ParseQueryString(ctx.Request.Url.Query);
 
                 EndpointInfo endpoint = EndpointRegistry.Resolve(method, path, out string topic);
                 if (endpoint == null)
@@ -173,7 +181,7 @@ namespace UnityBridge.Editor
                     // Tick()) for the whole compile+reload — routing meta
                     // requests through that queue would make readyState
                     // "compiling" unobservable exactly when it's needed.
-                    var directResult = InvokeHandler(endpoint, topic, parsedBody);
+                    var directResult = InvokeHandler(endpoint, topic, parsedBody, query);
                     WriteJson(ctx, directResult.Status, directResult.Body);
                     return;
                 }
@@ -196,7 +204,7 @@ namespace UnityBridge.Editor
                         });
                         return;
                     }
-                    var directResult = InvokeHandler(endpoint, topic, parsedBody);
+                    var directResult = InvokeHandler(endpoint, topic, parsedBody, query);
                     WriteJson(ctx, directResult.Status, directResult.Body);
                     return;
                 }
@@ -206,6 +214,7 @@ namespace UnityBridge.Editor
                     Endpoint = endpoint,
                     Topic = topic,
                     Body = parsedBody,
+                    Query = query,
                     Tcs = new TaskCompletionSource<BridgeHandlerResult>(),
                     EnqueuedAt = DateTime.UtcNow
                 };
@@ -234,6 +243,30 @@ namespace UnityBridge.Editor
             {
                 // Connection likely gone (e.g. torn down mid-reload). Nothing to write to.
             }
+        }
+
+        // Hand-rolled instead of System.Web.HttpUtility — not reliably
+        // available under Unity's Editor assembly API compatibility level,
+        // and this codebase already avoids external parsing deps (MiniJson
+        // exists for the same reason).
+        static IReadOnlyDictionary<string, string> ParseQueryString(string query)
+        {
+            var result = new Dictionary<string, string>();
+            if (string.IsNullOrEmpty(query)) return result;
+            if (query[0] == '?') query = query.Substring(1);
+
+            foreach (var pair in query.Split('&'))
+            {
+                if (pair.Length == 0) continue;
+                int eq = pair.IndexOf('=');
+                string key = eq >= 0 ? pair.Substring(0, eq) : pair;
+                string value = eq >= 0 ? pair.Substring(eq + 1) : "";
+                key = Uri.UnescapeDataString(key);
+                value = Uri.UnescapeDataString(value);
+                if (key.Length > 0) result[key] = value;
+            }
+
+            return result;
         }
 
         static bool IsLocalHost(string hostHeader)
@@ -273,15 +306,15 @@ namespace UnityBridge.Editor
 
             while (_queue.TryDequeue(out var pending))
             {
-                pending.Tcs.TrySetResult(InvokeHandler(pending.Endpoint, pending.Topic, pending.Body));
+                pending.Tcs.TrySetResult(InvokeHandler(pending.Endpoint, pending.Topic, pending.Body, pending.Query));
             }
         }
 
-        static BridgeHandlerResult InvokeHandler(EndpointInfo endpoint, string topic, Dictionary<string, object> requestBody)
+        static BridgeHandlerResult InvokeHandler(EndpointInfo endpoint, string topic, Dictionary<string, object> requestBody, IReadOnlyDictionary<string, string> query)
         {
             try
             {
-                var body = endpoint.Handler(new BridgeRequestContext(topic, requestBody));
+                var body = endpoint.Handler(new BridgeRequestContext(topic, requestBody, query));
                 return new BridgeHandlerResult { Status = 200, Body = body };
             }
             catch (BridgeHttpException httpEx)

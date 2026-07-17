@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 
@@ -43,6 +44,15 @@ namespace UnityBridge.Editor
         internal static void MarkCompiling()
         {
             SetReadyState("compiling");
+        }
+
+        // Live responses are frame-stale by definition during play mode
+        // (task brief, "Failure modes to handle explicitly" — play mode).
+        // Every live-tier handler calls this after building its body so the
+        // caller can tell which frame the answer was current as of.
+        internal static void AddFrameIfPlaying(Dictionary<string, object> body)
+        {
+            if (EditorApplication.isPlaying) body["frame"] = Time.frameCount;
         }
 
         // Logged so transitions that are too fast to catch with a manual

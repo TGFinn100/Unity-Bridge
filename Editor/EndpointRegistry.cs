@@ -23,7 +23,15 @@ namespace UnityBridge.Editor
     {
         public readonly string Topic; // captured path-param segment, e.g. the topic in /help/{topic} or the guid in /asset/{guid}
         public readonly Dictionary<string, object> Body; // parsed POST body, null for GET or an empty/missing body
-        public BridgeRequestContext(string topic, Dictionary<string, object> body = null) { Topic = topic; Body = body; }
+        public readonly IReadOnlyDictionary<string, string> Query; // parsed GET query string, e.g. ?depth=1&components=values; never null (empty dict if none)
+        public BridgeRequestContext(string topic, Dictionary<string, object> body = null, IReadOnlyDictionary<string, string> query = null)
+        {
+            Topic = topic;
+            Body = body;
+            Query = query ?? EmptyQuery;
+        }
+
+        static readonly Dictionary<string, string> EmptyQuery = new Dictionary<string, string>();
     }
 
     internal sealed class BridgeHandlerResult
