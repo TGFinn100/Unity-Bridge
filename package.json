@@ -1,0 +1,10 @@
+{
+  "name": "com.dalstar.unitybridge",
+  "version": "0.1.0",
+  "displayName": "Unity Query Bridge",
+  "description": "Editor-only local HTTP API exposing Unity project and scene information for AI agent queries. Read-only in v1, zero player footprint.",
+  "unity": "6000.5",
+  "author": {
+    "name": "dalstar"
+  }
+}
