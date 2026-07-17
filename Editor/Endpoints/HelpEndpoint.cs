@@ -33,6 +33,7 @@ namespace UnityBridge.Editor
                 ExampleResponseAbbrev = "{\"tier\":\"meta\",\"method\":\"GET\",\"path\":\"/ping\",\"summary\":\"...\",\"params\":[],\"exampleRequest\":\"...\",\"exampleResponse\":\"...\"}",
                 TimeoutMs = 5000,
                 IsTopicRoute = true,
+                ParamPrefix = "/help/",
                 Handler = HandleTopic
             });
         }
@@ -42,24 +43,11 @@ namespace UnityBridge.Editor
             var list = new List<object>();
             foreach (var e in EndpointRegistry.All)
             {
-                if (e.IsTopicRoute) continue;
                 list.Add(new Dictionary<string, object>
                 {
                     { "method", e.Method },
                     { "path", e.Path },
                     { "summary", e.Summary }
-                });
-            }
-            // The topic-route catch-all is documented explicitly since it's a real endpoint
-            // even though it isn't in the exact-match registry loop.
-            var topicRoute = EndpointRegistry.All.FirstOrDefault(e => e.IsTopicRoute);
-            if (topicRoute != null)
-            {
-                list.Add(new Dictionary<string, object>
-                {
-                    { "method", topicRoute.Method },
-                    { "path", topicRoute.Path },
-                    { "summary", topicRoute.Summary }
                 });
             }
 

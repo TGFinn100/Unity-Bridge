@@ -15,6 +15,7 @@ namespace UnityBridge.Editor
     {
         public EndpointInfo Endpoint;
         public string Topic;
+        public Dictionary<string, object> Body;
         public TaskCompletionSource<BridgeHandlerResult> Tcs;
         public DateTime EnqueuedAt;
     }
@@ -41,6 +42,7 @@ namespace UnityBridge.Editor
 
         static BridgeServer()
         {
+            IndexStore.Load(); // pure file I/O — safe before any Tick() has run
             RegisterEndpoints();
             StartListener();
             EditorApplication.update += Tick;
@@ -53,6 +55,8 @@ namespace UnityBridge.Editor
         {
             PingEndpoint.Register();
             HelpEndpoint.Register();
+            QueryEndpoint.Register();
+            AssetEndpoint.Register();
         }
 
         static void StartListener()
@@ -85,7 +89,7 @@ namespace UnityBridge.Editor
 
         static void WritePortFileAtomic(int port)
         {
-            string dir = Path.Combine(GetProjectRoot(), "Library", "UnityBridge");
+            string dir = ProjectPaths.LibraryUnityBridgeDir;
             Directory.CreateDirectory(dir);
             string finalPath = Path.Combine(dir, "port");
             string tempPath = finalPath + ".tmp";
@@ -96,8 +100,6 @@ namespace UnityBridge.Editor
             else
                 File.Move(tempPath, finalPath);
         }
-
-        static string GetProjectRoot() => Path.GetDirectoryName(Application.dataPath);
 
         static void AcceptLoop()
         {
@@ -139,6 +141,27 @@ namespace UnityBridge.Editor
                     return;
                 }
 
+                Dictionary<string, object> parsedBody = null;
+                if (method == "POST" && ctx.Request.HasEntityBody)
+                {
+                    string rawBody;
+                    using (var reader = new StreamReader(ctx.Request.InputStream, ctx.Request.ContentEncoding ?? Encoding.UTF8))
+                        rawBody = reader.ReadToEnd();
+
+                    if (!string.IsNullOrWhiteSpace(rawBody))
+                    {
+                        try
+                        {
+                            parsedBody = MiniJson.Parse(rawBody) as Dictionary<string, object>;
+                        }
+                        catch (Exception)
+                        {
+                            WriteJson(ctx, 400, new Dictionary<string, object> { { "error", "malformed JSON body" } });
+                            return;
+                        }
+                    }
+                }
+
                 if (endpoint.Tier == "meta")
                 {
                     // Meta-tier endpoints (/ping, /help) only read pre-cached,
@@ -150,7 +173,30 @@ namespace UnityBridge.Editor
                     // Tick()) for the whole compile+reload — routing meta
                     // requests through that queue would make readyState
                     // "compiling" unobservable exactly when it's needed.
-                    var directResult = InvokeHandler(endpoint, topic);
+                    var directResult = InvokeHandler(endpoint, topic, parsedBody);
+                    WriteJson(ctx, directResult.Status, directResult.Body);
+                    return;
+                }
+
+                if (endpoint.Tier == "indexed")
+                {
+                    // Indexed-tier reads answer directly from the in-memory
+                    // index on this thread too (LOCKED — task brief:
+                    // "no main thread involved, slow means broken, fail
+                    // fast"), never via the main-thread queue below. The
+                    // index store itself is what's thread-safe here (a lock
+                    // around its lists), not this dispatch.
+                    if (!IndexStore.IsReady)
+                    {
+                        WriteJson(ctx, 503, new Dictionary<string, object>
+                        {
+                            { "tier", "indexed" },
+                            { "error", "indexing" },
+                            { "readyState", BridgeState.CachedReadyState }
+                        });
+                        return;
+                    }
+                    var directResult = InvokeHandler(endpoint, topic, parsedBody);
                     WriteJson(ctx, directResult.Status, directResult.Body);
                     return;
                 }
@@ -159,6 +205,7 @@ namespace UnityBridge.Editor
                 {
                     Endpoint = endpoint,
                     Topic = topic,
+                    Body = parsedBody,
                     Tcs = new TaskCompletionSource<BridgeHandlerResult>(),
                     EnqueuedAt = DateTime.UtcNow
                 };
@@ -220,19 +267,21 @@ namespace UnityBridge.Editor
 
         static void Tick()
         {
+            IndexStore.RunFullScanIfNeeded();
+            BridgeAssetPostprocessor.FlushIfDue();
             BridgeState.RefreshFromMainThread();
 
             while (_queue.TryDequeue(out var pending))
             {
-                pending.Tcs.TrySetResult(InvokeHandler(pending.Endpoint, pending.Topic));
+                pending.Tcs.TrySetResult(InvokeHandler(pending.Endpoint, pending.Topic, pending.Body));
             }
         }
 
-        static BridgeHandlerResult InvokeHandler(EndpointInfo endpoint, string topic)
+        static BridgeHandlerResult InvokeHandler(EndpointInfo endpoint, string topic, Dictionary<string, object> requestBody)
         {
             try
             {
-                var body = endpoint.Handler(new BridgeRequestContext(topic));
+                var body = endpoint.Handler(new BridgeRequestContext(topic, requestBody));
                 return new BridgeHandlerResult { Status = 200, Body = body };
             }
             catch (BridgeHttpException httpEx)

@@ -16,7 +16,7 @@ namespace UnityBridge.Editor
                 Summary = "Editor readiness, version, project name",
                 Params = Array.Empty<string>(),
                 ExampleRequest = "GET /ping",
-                ExampleResponseAbbrev = "{\"tier\":\"meta\",\"readyState\":\"ready\",\"unityVersion\":\"6000.5.2f1\",\"projectName\":\"Unity MCP\",\"boundPort\":17870}",
+                ExampleResponseAbbrev = "{\"tier\":\"meta\",\"readyState\":\"ready\",\"unityVersion\":\"6000.5.2f1\",\"projectName\":\"Unity MCP\",\"boundPort\":17870,\"indexedAt\":\"2026-07-17T12:00:00.000Z\",\"schemaVersion\":1}",
                 TimeoutMs = 5000,
                 Handler = Handle
             });
@@ -30,7 +30,9 @@ namespace UnityBridge.Editor
                 { "readyState", BridgeState.CachedReadyState },
                 { "unityVersion", BridgeState.CachedUnityVersion },
                 { "projectName", BridgeState.CachedProjectName },
-                { "boundPort", BridgeServer.BoundPort }
+                { "boundPort", BridgeServer.BoundPort },
+                { "indexedAt", IndexStore.LastUpdatedIso },
+                { "schemaVersion", IndexStore.SchemaVersion }
             };
         }
     }

@@ -15,13 +15,15 @@ namespace UnityBridge.Editor
         public string ExampleResponseAbbrev;
         public int TimeoutMs;
         public bool IsTopicRoute;
+        public string ParamPrefix; // e.g. "/help/" or "/asset/" — required when IsTopicRoute
         public Func<BridgeRequestContext, Dictionary<string, object>> Handler;
     }
 
     internal readonly struct BridgeRequestContext
     {
-        public readonly string Topic;
-        public BridgeRequestContext(string topic) { Topic = topic; }
+        public readonly string Topic; // captured path-param segment, e.g. the topic in /help/{topic} or the guid in /asset/{guid}
+        public readonly Dictionary<string, object> Body; // parsed POST body, null for GET or an empty/missing body
+        public BridgeRequestContext(string topic, Dictionary<string, object> body = null) { Topic = topic; Body = body; }
     }
 
     internal sealed class BridgeHandlerResult
@@ -60,24 +62,32 @@ namespace UnityBridge.Editor
                 if (e.Method == method && e.Path == path) return e;
             }
 
-            if (method == "GET" && path.StartsWith("/help/"))
+            // Param routes (/help/{topic}, /asset/{guid}, ...): match by
+            // method + path prefix, capture the remainder as the param.
+            foreach (var e in _entries)
             {
-                topic = path.Substring("/help/".Length).Trim('/');
-                return _entries.Find(e => e.IsTopicRoute);
+                if (!e.IsTopicRoute || e.Method != method) continue;
+                if (string.IsNullOrEmpty(e.ParamPrefix) || !path.StartsWith(e.ParamPrefix)) continue;
+                topic = path.Substring(e.ParamPrefix.Length).Trim('/');
+                return e;
             }
 
             return null;
         }
 
+        // IsTopicRoute is purely a routing concern (does this endpoint's own
+        // path need prefix-matching against a captured param) and doesn't
+        // exclude it from being documented — /help/{topic} and /asset/{guid}
+        // are themselves valid topics (e.g. GET /help/asset), same as any
+        // exact-match endpoint.
         internal static EndpointInfo FindByTopic(string topicKey)
         {
-            return _entries.Find(e => !e.IsTopicRoute && e.TopicKey == topicKey);
+            return _entries.Find(e => e.TopicKey == topicKey);
         }
 
         internal static IEnumerable<string> AllTopics()
         {
-            foreach (var e in _entries)
-                if (!e.IsTopicRoute) yield return e.TopicKey;
+            foreach (var e in _entries) yield return e.TopicKey;
         }
 
         static string NormalizePath(string path)

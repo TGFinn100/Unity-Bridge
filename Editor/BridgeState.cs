@@ -20,6 +20,7 @@ namespace UnityBridge.Editor
         {
             string state;
             if (EditorApplication.isCompiling) state = "compiling";
+            else if (!IndexStore.IsReady) state = "indexing";
             else if (EditorApplication.isPlaying) state = "playmode";
             else state = "ready";
 
