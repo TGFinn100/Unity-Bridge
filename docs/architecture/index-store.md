@@ -57,6 +57,29 @@ identical — no separate serialization logic for "on disk" vs "over HTTP."
 magnitude — any record field that's logically an integer needs this one
 coercion path regardless of which numeric type came back.
 
+## Scan scope
+
+Both `RunFullScan()` and `ApplyIncrementalUpdate()` walk/accept paths from
+across the whole `AssetDatabase` — `Assets/` and `Packages/` alike — with
+one deliberate, matching exclusion in both: anything under
+`IndexStore.SelfPackagePrefix` (`Packages/com.dalstar.unitybridge/`, the
+bridge's own LOCKED package location) is never indexed. Rationale
+(2026-07-18, found via a real bug): third-party `file:`/git-referenced
+package source (Facepunch transport, NGO, etc.) is real project content and
+must be queryable, so scanning can't be restricted to `Assets/` only — but
+the bridge's own source must never be treated as just another queryable
+asset, since an agent editing it could break the tool serving the query.
+
+**The bug this fixes:** the two update paths used to disagree —
+`RunFullScan` filtered to `Assets/` only, `ApplyIncrementalUpdate` had no
+filter at all — so the index's actual scope silently depended on which
+path happened to touch a given file first (a script only entered the index
+if something re-triggered its `AssetPostprocessor` import *after* the
+bridge was already running; anything whose only import happened during
+initial bootstrap, before `_isReady` went true, was permanently invisible
+to every subsequent full scan). Both paths must apply the exact same
+exclusion rule, or this class of drift reappears.
+
 ## Gotchas already hit once
 
 - **BOM**: jsonl files must be written with `new UTF8Encoding(false)`, not

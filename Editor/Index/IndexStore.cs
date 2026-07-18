@@ -28,6 +28,17 @@ namespace UnityBridge.Editor
     {
         internal const int SchemaVersion = 1;
 
+        // The bridge's own package is never indexed, by either scan path
+        // (LOCKED environment location, task brief line 59). Rationale
+        // (2026-07-18): everything else under Packages/ — third-party
+        // file:/git-referenced source (Facepunch transport, NGO, etc.) —
+        // is real project content and should be queryable, so scanning
+        // can't be limited to Assets/ only. But the bridge's own source
+        // must stay out of its own index: nothing should treat it as just
+        // another queryable/editable asset, since an edit there can break
+        // the very tool serving the query.
+        internal const string SelfPackagePrefix = "Packages/com.dalstar.unitybridge/";
+
         static readonly object _gate = new object();
 
         static List<AssetRecord> _assets = new List<AssetRecord>();
@@ -107,7 +118,7 @@ namespace UnityBridge.Editor
 
             foreach (string path in AssetDatabase.GetAllAssetPaths())
             {
-                if (!path.StartsWith("Assets/") && path != "Assets") continue;
+                if (path.StartsWith(SelfPackagePrefix, StringComparison.Ordinal)) continue;
                 string guid = AssetDatabase.AssetPathToGUID(path);
                 if (string.IsNullOrEmpty(guid)) continue;
 
@@ -245,6 +256,12 @@ namespace UnityBridge.Editor
 
                 foreach (string path in touchedPaths)
                 {
+                    // Must agree with RunFullScan's self-exclusion, or the
+                    // index's content depends on accidental import timing
+                    // (which path happened to touch a given file first)
+                    // instead of a consistent rule.
+                    if (path.StartsWith(SelfPackagePrefix, StringComparison.Ordinal)) continue;
+
                     // A path can legitimately appear in both sets within one
                     // batch (e.g. delete+recreate at the same path) — Unity
                     // reporting it as touched means it exists now, which

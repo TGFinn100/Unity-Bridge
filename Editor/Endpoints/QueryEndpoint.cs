@@ -22,7 +22,7 @@ namespace UnityBridge.Editor
                     "type (string, optional): friendly asset type, e.g. \"prefab\", \"scene\", \"script\"",
                     "nameGlob (string, optional): * and ? glob matched against asset name",
                     "pathPrefix (string, optional): prefix match against asset path",
-                    "hasComponent (string, optional): component type name; joins prefab/scene component tables, including scenes via prefab instances",
+                    "hasComponent (string, optional): component type name; joins prefab/scene component tables, including scenes via prefab instances. Caveat: override-REMOVED components on prefab instances are not resolved — results may rarely include a component an instance has actually removed (benign false positive). Confirm with a live /object call when precision matters.",
                     "fields (string[], optional): subset of guid|path|type|name|sizeBytes|mtime, defaults to guid,path,type,name",
                     "limit (int, optional): default 20, max 100"
                 },
