@@ -13,18 +13,29 @@ explanation if you need it.
 - **`live`** — touches the Unity API (scene, GameObjects, EditorApplication,
   anything not pre-cached). Routes through the main-thread queue
   automatically — this path already exists, just set `Tier = "live"`.
+- **`act`** — mutates Editor state (v1.5). Requires `X-Bridge-Token` auth,
+  goes through `ActionScheduler`'s single-pending-action guard, and follows
+  the accepted-then-reconnect contract (202 sent before the change runs,
+  deferred to the next `Tick()`). Set `BuildAct` (not `Handler`) to a
+  `Func<ActBuildResult>` that only reads pre-cached state and returns
+  either a 409 conflict or a 202 + deferred `Action`. Rare — only add a new
+  `act` endpoint for a genuine Editor mutation, not a read. See
+  `routing-and-tiers.md`'s `act` tier section before adding one; the guard
+  and cooldown patterns there (`ActionScheduler`, `ActionToken`) are shared
+  infrastructure, reuse them rather than re-deriving.
 
 See `routing-and-tiers.md` for why each tier dispatches the way it does.
 
 ## 2. Create `Editor/Endpoints/<Name>Endpoint.cs`
 
 A static `Register()` building one `EndpointInfo` and calling
-`EndpointRegistry.Add(...)`, plus a static `Handle(BridgeRequestContext ctx)`.
-Required `EndpointInfo` fields, and why `/help` needs each one, are in
-`help-generation.md`. If the endpoint takes a path parameter (like
-`/asset/{guid}` or `/object/{id}`), set `IsTopicRoute = true` and
-`ParamPrefix = "/yourpath/"` — see `routing-and-tiers.md`'s router section
-for exactly how prefix matching captures the remainder.
+`EndpointRegistry.Add(...)`, plus a static `Handle(BridgeRequestContext ctx)`
+(meta/indexed/live) or `BuildAct()` returning `ActBuildResult` (act tier
+only — see step 1). Required `EndpointInfo` fields, and why `/help` needs
+each one, are in `help-generation.md`. If the endpoint takes a path
+parameter (like `/asset/{guid}` or `/object/{id}`), set `IsTopicRoute = true`
+and `ParamPrefix = "/yourpath/"` — see `routing-and-tiers.md`'s router
+section for exactly how prefix matching captures the remainder.
 
 ## 3. Read input from `ctx`
 
@@ -49,6 +60,12 @@ inventing new wording per endpoint.
   doesn't fit that (multiple lists, a nested tree), see the two existing
   precedents in `response-envelope.md` before writing a third pattern from
   scratch.
+- Act-tier: no `Handler`/response-body-building step at all — `BuildAct`
+  returns a full `ActBuildResult` (status + body + optional deferred
+  `Action`) instead. A 202 body conventionally carries `"accepted":true`
+  and `"willReload"`; a 409 carries `"error"` plus whatever context
+  explains the conflict (`"current"` for `already_in_state`, nothing extra
+  for `action_pending`). See the error-shape list in `response-envelope.md`.
 
 Full envelope/error-shape reference: `response-envelope.md`.
 

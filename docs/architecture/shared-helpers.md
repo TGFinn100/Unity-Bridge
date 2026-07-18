@@ -41,6 +41,36 @@ for POST bodies and for reading jsonl records back off disk; it only needs
 to handle the subset `Write()` itself produces (no comments, no trailing
 commas). See `response-envelope.md` for `Write()`'s type-dispatch gotcha.
 
+## `ActionToken.cs` (v1.5)
+
+Per-project token for `/act/*` auth. `EnsureExists()` — called from
+`BridgeServer`'s static constructor, pure file I/O safe before any
+main-thread tick — generates a 32-byte random hex token on first run and
+writes it atomically to `Library/UnityBridge/token`; stable across reloads
+(never regenerated while the file exists) since it's read back off disk if
+present. `IsValid(presented)` is a plain ordinal string comparison — no
+timing-oracle mitigation, since the threat model is "another localhost
+process/webpage guessing the port and firing a mutation," not secret
+management for a real credential (same reasoning as v1's "no auth needed
+while read-only" note).
+
+## `ActionScheduler.cs` (v1.5)
+
+Single-pending-action guard + deferred main-thread execution, shared across
+all `act`-tier endpoints. `Schedule(Func<ActBuildResult> buildAct)` runs
+entirely inside one lock: if an action is already pending, returns 409
+`action_pending` without calling `buildAct` at all (LOCKED ordering —
+pending-check strictly before idempotence-check, since computing
+idempotence against a value that's about to change by the pending action is
+pointless); otherwise calls `buildAct()`, and if it returns a 202 stores its
+`MainThreadAction` as the pending action. `RunPendingIfAny()` — called at
+the top of every `Tick()`, before `IndexStore.RunFullScanIfNeeded()` — pops
+and invokes the pending action (if any) on the main thread. This is what
+lets an `/act` handler respond 202 on the request thread before the actual
+`EditorApplication.isPlaying` toggle or `AssetDatabase.Refresh()` call runs.
+See `routing-and-tiers.md`'s `act` tier section for the full request
+lifecycle this participates in.
+
 ## `ProjectPaths.cs`
 
 `ProjectRoot`, `ToAbsolute(assetPath)`, `LibraryUnityBridgeDir` — the

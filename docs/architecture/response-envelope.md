@@ -6,13 +6,19 @@ consumer is a model).
 
 ## Fields every successful response carries
 
-- `"tier"`: `"meta" | "indexed" | "live"` — always present.
+- `"tier"`: `"meta" | "indexed" | "live" | "act"` — always present.
 - `"indexedAt"`: ISO timestamp, indexed-tier responses only
   (`IndexStore.LastUpdatedIso`).
 - `"frame"`: `Time.frameCount`, added by `BridgeState.AddFrameIfPlaying(body)`
   to any live-tier response when `EditorApplication.isPlaying` — the
   brief's "live answers are frame-stale by definition in play mode"
   disclosure. Every live handler calls this after building its body.
+- `"accepted"` / `"willReload"`: act-tier only, on a 202. `willReload` is
+  best-effort (`/act/refresh` always reports `true`; `/act/playmode/*`
+  derives it from Configurable Enter Play Mode settings via
+  `BridgeState.CachedWillReloadOnPlaymodeToggle`) — see `routing-and-tiers.md`'s
+  `act` tier section for the accepted-then-reconnect contract this
+  supports.
 
 ## The truncated/total/hint trio (LOCKED)
 
@@ -57,6 +63,19 @@ fits before inventing a third pattern.
 - No route matches → 404 `{"error":"unknown endpoint — see /help"}`.
 - Non-localhost `Host` header → 403 `{"error":"Host header must be localhost or 127.0.0.1"}`.
 - Malformed POST JSON body → 400 `{"error":"malformed JSON body"}`.
+- **`act`-tier only** (v1.5, checked in this order — see `routing-and-tiers.md`):
+  - Missing/invalid `X-Bridge-Token` header → 401
+    `{"error":"unauthorized","tier":"act"}`, unconditionally first.
+  - `readyState` not `"ready"`/`"playmode"` → 503
+    `{"tier":"act","error":"not_ready","readyState":...}` (never queue an
+    action across a reload).
+  - Another action already scheduled but not yet applied → 409
+    `{"tier":"act","error":"action_pending"}`.
+  - Action would be a no-op given current state (e.g. entering play mode
+    while already in it) → 409
+    `{"tier":"act","error":"already_in_state","current":...}`.
+  - `/act/playmode/*` only: a toggle within 1000ms of the last accepted one
+    → 429 `{"tier":"act","error":"cooldown","retryAfterMs":...}`.
 
 ## `MiniJson.Write`'s type-conversion gotcha
 

@@ -7,9 +7,10 @@ lifecycle). There is no separate "dispatcher" class beyond these two.
 ## The data model (`EndpointRegistry.cs`)
 
 - `EndpointInfo` — one per endpoint: `Method`, `Path` (display only for
-  topic routes), `TopicKey`, `Tier` (`"meta"|"indexed"|"live"`), `Summary`
-  (≤8 words), `Params`, `ExampleRequest`, `ExampleResponseAbbrev`,
-  `TimeoutMs`, `IsTopicRoute`/`ParamPrefix`, `Handler`.
+  topic routes), `TopicKey`, `Tier` (`"meta"|"indexed"|"live"|"act"`),
+  `Summary` (≤8 words), `Params`, `ExampleRequest`, `ExampleResponseAbbrev`,
+  `TimeoutMs`, `IsTopicRoute`/`ParamPrefix`, `Handler` (meta/indexed/live
+  only), `BuildAct` (act tier only — see the `act` tier section below).
 - `BridgeRequestContext` — passed to every handler: `Topic` (captured
   path-param segment), `Body` (parsed POST JSON, null if none), `Query`
   (parsed GET query string, added Phase 3 — never null, empty dict if
@@ -45,7 +46,7 @@ needs manual wiring beyond its own file. See `adding-an-endpoint.md`.
    malformed JSON.
 5. Branch on `endpoint.Tier`.
 
-## The three tiers
+## The four tiers
 
 **`meta`** (`/ping`, `/help`, `/help/{topic}`) — answered directly on the
 background request thread, bypassing the main-thread queue entirely.
@@ -77,6 +78,51 @@ is waiting). `TimeoutMs` in practice: 5000. **A new endpoint that needs
 real Unity API access just sets `Tier = "live"` — no `BridgeServer` change
 is needed**, this path already exists and is exercised by all four Phase 3
 endpoints.
+
+**`act`** (`/act/playmode/enter`, `/act/playmode/exit`, `/act/refresh`,
+v1.5) — mutating endpoints, dispatched entirely differently from the three
+read-only tiers above. An `act` endpoint sets `BuildAct` (a
+`Func<ActBuildResult>`) instead of `Handler`, and `HandleRequest` branches
+on `endpoint.Tier == "act"` before it ever reaches the main-thread queue:
+
+1. **Token check first (LOCKED ordering)** — `X-Bridge-Token` header
+   checked against `ActionToken.IsValid`; invalid/missing → unconditional
+   401 `{"error":"unauthorized","tier":"act"}`, before readyState or any
+   other check runs, so an unauthenticated caller can't infer state via a
+   409/503 that would otherwise fire first.
+2. **Readiness gate** — `BridgeState.CachedReadyState` must be `"ready"`
+   or `"playmode"`; anything else (compiling/indexing/reloading) → 503
+   `{"tier":"act","error":"not_ready","readyState":...}`. An action is
+   never queued across a reload.
+3. **`ActionScheduler.Schedule(endpoint.BuildAct)`** — runs the endpoint's
+   `BuildAct` under `ActionScheduler`'s single lock. `BuildAct` only reads
+   pre-cached thread-safe state (same discipline as every other tier) and
+   returns an `ActBuildResult`: either a 409 conflict (e.g.
+   `already_in_state`) with no action, or a 202 `{"accepted":true,...}`
+   plus an `Action` deferred to the next `Tick()`. If another action is
+   already pending, `Schedule` returns 409
+   `{"tier":"act","error":"action_pending"}` without calling `BuildAct` at
+   all (LOCKED ordering — pending-check strictly before idempotence-check).
+   `ActionScheduler.RunPendingIfAny()` runs the deferred `Action` on the
+   main thread at the start of the next `Tick()`, before
+   `IndexStore.RunFullScanIfNeeded()`.
+
+**Accepted-then-reconnect contract (LOCKED):** the 202 response is sent
+*before* the actual state change runs — entering/exiting play mode or
+refreshing the AssetDatabase typically triggers a domain reload that tears
+down the listener, so there's no way to respond *after* the change without
+racing the reload. Callers treat a 202 as "the action was scheduled;
+reconnect and poll `/ping` to observe the result," never as confirmation
+the change already happened.
+
+`ActPlaymodeEndpoint` additionally layers a 1000ms cooldown shared between
+enter/exit, checked before the idempotence check: a toggle within the
+window of the last accepted one → 429
+`{"tier":"act","error":"cooldown","retryAfterMs":...}`. See
+`shared-helpers.md` for `ActionToken.cs` and `ActionScheduler.cs`.
+
+`TimeoutMs` in practice: 5000 (unused in the request-thread-direct dispatch
+above, kept for `EndpointInfo` shape consistency with the other tiers).
 
 ## Domain reload survival
 
