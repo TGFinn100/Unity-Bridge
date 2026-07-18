@@ -41,6 +41,24 @@ immediately, so it mostly observed an already-finished reload), one after
 that fix but before the `compiling`-observability fix below (state was
 tracked correctly internally but never delivered over HTTP). See DECISIONS.
 
+## ACCEPTANCE EVIDENCE
+
+- **Criterion 1, literal `NetworkObject` test — 2026-07-18.** The brief's
+  acceptance criterion 1 uses `/query {"hasComponent":"NetworkObject"}` as
+  its example; earlier passes only exercised `hasComponent` with
+  `AudioSource`/`Rigidbody`. Ran the literal query against False Signal
+  (real NGO project). Stored form confirmed via
+  `Library/UnityBridge/prefab_components.jsonl` before querying:
+  `componentType` is the short class name `"NetworkObject"`
+  (`Component.GetType().Name`), not the fully-qualified
+  `Unity.Netcode.NetworkObject` — matching is `StringComparison.Ordinal`
+  case-sensitive, so this distinction matters. Query returned 5 results:
+  `Player.prefab`, `NPC.prefab`, `BlackHole.prefab`, `Planet.prefab` (all
+  confirmed carrying `NetworkObject` in `prefab_components.jsonl`), plus
+  `MainGame.unity` (via the `scenePrefabInstances` join). Cross-checked
+  `Player.prefab`'s GUID (`712685e6cf91eac4291a76de99dc3404`) directly
+  against `assets.jsonl` before trusting the query result.
+
 ## DECISIONS
 
 - **2026-07-17 — commit-tracker hook uses mtime comparison, not `git status`.**
@@ -199,6 +217,39 @@ tracked correctly internally but never delivered over HTTP). See DECISIONS.
   `System.Web.HttpUtility` — not reliably available under Unity's Editor
   assembly API compatibility level, consistent with this codebase already
   writing its own `MiniJson` instead of pulling in a JSON library.
+- **2026-07-18 — `Volume`/package-script resolution: confirmed fixed as a
+  side effect of the scan-scope fix, not separately.** The Phase 2 note
+  above (URP's `Volume` `MonoBehaviour` skipped because its script guid
+  wasn't in `script_types.jsonl`) predates the 2026-07-18 scan-scope fix
+  (`IndexStore` DECISIONS entry, same date). Re-checked directly against
+  the sandbox's current `scene_components.jsonl`:
+  `{"guid":"99c9720ab...","componentType":"Volume","objectPath":"Global
+  Volume"}` is now present for `SampleScene`. `Volume`'s source `.cs` lives
+  under `Packages/`, which the old `Assets/`-only scan scope excluded from
+  `script_types.jsonl`; now that both scan paths cover all of
+  `Assets/`+`Packages/` (minus the bridge's own package), it resolves.
+  Verified via static jsonl inspection only — the sandbox project wasn't
+  open at the time, so this wasn't a live `/query` check. Neither the skill
+  file nor `/help/query` ever documented this as a caveat, so nothing
+  needed correcting there.
+- **2026-07-18 — timing instrumentation added to both scan paths.**
+  `RunFullScan()` and `ApplyIncrementalUpdate()` now wrap their work in a
+  `Stopwatch` and log elapsed ms (`"Full index scan complete in Xms..."` /
+  `"Incremental update applied in Xms..."`). Additive logging only, no
+  behavior or response-shape change. Measured against False Signal after a
+  real `Library/UnityBridge/` deletion + reopen: full rebuild 864ms (10734
+  assets); one incremental update (single new asset) 46ms.
+- **2026-07-18 — `/query` filter casing: documented, not normalized.**
+  `hasComponent` and `pathPrefix` are `StringComparison.Ordinal`
+  case-sensitive; `type` and `nameGlob` are case-insensitive. Chose to
+  document this split explicitly (`/help/query` params + skill file, both
+  regenerated verbatim from live `/help/query` output) rather than
+  normalize all four to one casing rule — the split is defensible
+  (`hasComponent`/`pathPrefix` match exact identifiers: C# class names and
+  file paths; `type`/`nameGlob` are friendlier, fuzzier filters), and
+  normalizing now would change matching behavior on a system that already
+  passed its full acceptance sweep, without a specific defect motivating
+  the change.
 - **2026-07-17 — `GET /playmode`'s `elapsedSeconds` persists play-mode
   entry time to `Library/UnityBridge/playmode_entered` instead of a static
   field.** A domain reload (the common case on play-mode entry) resets all

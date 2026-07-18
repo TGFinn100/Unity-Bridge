@@ -110,6 +110,7 @@ namespace UnityBridge.Editor
         internal static void RunFullScan()
         {
             Debug.Log("[UnityBridge] Full index scan starting...");
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
             var newAssets = new List<AssetRecord>();
             var newPrefabComponents = new List<ComponentRecord>();
@@ -175,7 +176,8 @@ namespace UnityBridge.Editor
             WriteAllFiles(nowIso);
             _isReady = true;
 
-            Debug.Log($"[UnityBridge] Full index scan complete: {newAssets.Count} assets, " +
+            stopwatch.Stop();
+            Debug.Log($"[UnityBridge] Full index scan complete in {stopwatch.ElapsedMilliseconds}ms: {newAssets.Count} assets, " +
                       $"{newPrefabComponents.Count} prefab components, {newSceneComponents.Count} scene components, " +
                       $"{newScenePrefabInstances.Count} scene prefab instances, {newScriptTypes.Count} script types.");
         }
@@ -245,6 +247,7 @@ namespace UnityBridge.Editor
         {
             if (!_isReady) return; // an impending/ongoing full scan already covers current disk state
 
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             var dirtyKinds = new HashSet<string>();
 
             lock (_gate)
@@ -320,6 +323,10 @@ namespace UnityBridge.Editor
             }
 
             if (dirtyKinds.Count > 0) WriteChangedFiles(dirtyKinds);
+
+            stopwatch.Stop();
+            Debug.Log($"[UnityBridge] Incremental update applied in {stopwatch.ElapsedMilliseconds}ms: " +
+                      $"{touchedPaths.Count} touched, {deletedPaths.Count} deleted, dirty=[{string.Join(",", dirtyKinds)}].");
         }
 
         // Must be called with _gate held.
