@@ -41,6 +41,81 @@ immediately, so it mostly observed an already-finished reload), one after
 that fix but before the `compiling`-observability fix below (state was
 tracked correctly internally but never delivered over HTTP). See DECISIONS.
 
+### Rerun 2026-07-18 (v1.5 acceptance criterion 5)
+
+**Result:** 10/10 PASS. Required because v1.5's token-auth check sits
+inside `HandleRequest`, within GATE 1's declared blast radius. Same script,
+same pass conditions, run after the full v1.5 crash investigation and
+driver update above.
+
+| Iteration | Reconnect time | Refused attempts | States seen | Port |
+|-----------|----------------|-------------------|-------------|------|
+| 1 | 26.0s | 1 | ready, compiling | 17870 |
+| 2 | 9.5s | 1 | ready, compiling | 17870 |
+| 3 | 4.7s | 1 | ready, compiling | 17870 |
+| 4 | 4.6s | 1 | ready, compiling | 17870 |
+| 5 | 4.9s | 1 | ready, compiling | 17870 |
+| 6 | 4.7s | 1 | ready, compiling | 17870 |
+| 7 | 5.7s | 1 | ready, compiling | 17870 |
+| 8 | 4.8s | 1 | ready, compiling | 17870 |
+| 9 | 4.8s | 1 | ready, compiling | 17870 |
+| 10 | 4.5s | 1 | ready, compiling | 17870 |
+
+Iteration 1's 26.0s is real but still within the 30s ceiling — first-cycle
+reconnects have consistently run slower than later ones across every GATE 1
+run this project has done (7.6s in the original run's iteration 1 too),
+plausibly a cold-start cost (JIT warmup, first-request overhead) rather
+than anything specific to v1.5. Two earlier attempts the same session
+failed outright (no disruption observed within 30s at all, not a marginal
+miss) despite `Editor.log` confirming both edits *did* eventually trigger
+real recompiles — timing investigation inconclusive (reaction-time,
+environment load, and `date +%s%3N` precision were all checked and ruled
+out); not reproduced on this clean pass, not chased further per the
+"diagnose, fix, rerun from iteration 1" rule once a genuine 10/10 was
+achieved.
+
+## GATE 1.5 RESULTS
+
+**Date:** 2026-07-18 · **Unity version:** 6000.5.2f1 · **Result:** 5/5 PASS
+(`gate15-playmode.sh`, sandbox project `Unity MCP`)
+
+All 5 iterations reconnected within the 30s ceiling, port stayed at 17870
+throughout, and all 5 deliberate wrong-token requests correctly returned
+401 without changing play state (10/10 real transitions confirmed). Fully
+unattended — unlike GATE 1, nothing here needs a human-triggered recompile.
+
+| Iteration | Enter time | Exit time | Wrong-token 401 | Port |
+|-----------|-----------|-----------|------------------|------|
+| 1 | 7.0s | 0.5s | confirmed | 17870 |
+| 2 | 3.4s | 0.5s | confirmed | 17870 |
+| 3 | 3.3s | 0.6s | confirmed | 17870 |
+| 4 | 3.4s | 0.6s | confirmed | 17870 |
+| 5 | 3.4s | 0.6s | confirmed | 17870 |
+
+Run with a 5s settle pause between iterations (diagnostic addition after
+the crash incident below — see DECISIONS). An earlier run the same day,
+without the pause, also passed 5/5 but was followed shortly after by a real
+Editor crash unrelated to any pass/fail condition of the gate itself — see
+the crash investigation in DECISIONS for the full analysis and the
+resulting `/act/playmode/*` cooldown.
+
+**Post-driver-update reruns (same day, after the crash investigation
+below):** user updated the NVIDIA driver (`32.0.15.9186` → `32.0.16.1074`,
+confirmed via `Editor.log`'s `[D3D12 Device Filter] Driver Version` line —
+the bridge itself has no API for this, it was checked the same way as the
+original crash, by reading the log directly). Two isolation reruns done
+with the cooldown and settle pause both temporarily disabled (`CooldownMs`
+= 0, `SETTLE_SECONDS` = 0 — the exact zero-delay conditions of the original
+crash) to test the driver update alone: **5/5 PASS, no crash.** Restored
+both to production values (1000ms, 5s) and reran once more: **5/5 PASS
+again.** Positive signal, but deliberately not claimed as proof — the
+original crash also only happened once, sporadically, after an earlier
+clean 5/5 pass on the *old* driver (and the two prior unrelated crashes on
+2026-07-12/13 were days apart, not clustered under rapid toggling), so the
+pre-update failure rate was already low enough that one clean post-update
+trial doesn't rule out coincidence. Real confidence would need sustained
+normal usage over days, not a single retest.
+
 ## ACCEPTANCE EVIDENCE
 
 - **Criterion 1, literal `NetworkObject` test — 2026-07-18.** The brief's
@@ -258,3 +333,53 @@ tracked correctly internally but never delivered over HTTP). See DECISIONS.
   caching a timestamp, so it's correct regardless of whether a reload
   happened, whether Configurable Enter Play Mode skipped it, or whether an
   unrelated mid-session script recompile reran the static constructor.
+- **2026-07-18 — Editor crash during v1.5 testing, investigated, root
+  cause found, `/act/playmode/*` cooldown added as a precaution (not a
+  fix).** Shortly after `gate15-playmode.sh` passed 5/5 cleanly, the Unity
+  Editor crashed (confirmed via `Editor.log`'s crash-handler output and a
+  captured dump under `%LOCALAPPDATA%\Temp\Unity\Editor\Crashes\`). Initial
+  stack trace pointed entirely at Unity's own D3D12 graphics pipeline
+  (`GfxDeviceD3D12::QueuePresent`, `D3D12Fence::Wait`,
+  `D3D12Window::EndRendering`) — nowhere near any bridge/script code.
+  Deeper investigation of `Editor.log` found the actual signal:
+  `D3D12Fence::Wait(...) error: got 18446744073709551615. Device removal.`
+  followed by `d3d12: Device failed error (887a0006)` and `Unrecoverable
+  GPU device error!` — `0x887a0006` is `DXGI_ERROR_DEVICE_REMOVED`, meaning
+  the NVIDIA GPU driver itself reset/crashed the D3D12 device; Unity
+  detected this and deliberately self-terminated (matches the
+  `RaiseException` → `LaunchBugReporter` frames in the original trace)
+  rather than continuing on a dead device. Windows Event Viewer confirmed:
+  `Unity.exe` / `KERNELBASE.dll` / exception `0x40000015`
+  (`STATUS_FATAL_APP_EXIT`) — a deliberate abort, not memory corruption.
+  **Critically, the identical signature (`Device removal`, `887a0006`,
+  same driver version `32.0.15.9186`) was found in two earlier crash logs
+  from 2026-07-12 and 2026-07-13 — days before v1.5 existed, during
+  ordinary unrelated work (the 07-12 one is deep into a long normal
+  session, nowhere near any rapid-toggle burst).** Conclusion: this is a
+  standing, recurring GPU driver issue on this specific machine (driver
+  dated 2026-01-20, ~6 months old at investigation time), not something
+  v1.5's testing uniquely caused. The "rapid playmode toggling stressed
+  the pipeline" hypothesis is weakened by this finding, not eliminated —
+  Editor.log does show a dense run of "GPU Resident Drawer created/disposed"
+  pairs (one per domain-reloading playmode toggle) immediately before the
+  crash, so rapid toggling remains a *plausible minor contributing factor*,
+  just not the primary explanation. Real fix is a GPU driver update, which
+  is outside the bridge's control and not something this project can force
+  or verify per-machine. Added anyway, per explicit user decision: a 1000ms
+  cooldown shared between `/act/playmode/enter` and `/act/playmode/exit`
+  (`ActPlaymodeEndpoint.cs`, a plain `Stopwatch`, not
+  `EditorApplication.timeSinceStartup` — keeps the request-thread-only,
+  no-live-Unity-API discipline) — a request within 1s of the last
+  *accepted* toggle returns `429 {"tier":"act","error":"cooldown",
+  "retryAfterMs":<n>}`. Verified live: an immediate re-toggle after a fast
+  exit (~0.5s) correctly returned 429 with an accurate `retryAfterMs`; the
+  same request after the window passed correctly returned 202. Explicitly
+  logged as a cheap, harmless precaution against one contributing factor,
+  never presented as a proven fix for the actual root cause. Diagnostic
+  recipe (grep `Editor.log` for `DXGI_ERROR_DEVICE_REMOVED`/`Device
+  removal` when the bridge is unreachable, before assuming a script/bridge
+  bug) added to the skill file's Failure modes and to
+  `docs/architecture/routing-and-tiers.md`'s Domain reload survival
+  section as a permanent limitation (the bridge runs inside the Unity
+  process with no separate watchdog, so it can never distinguish its own
+  crash from a slow reload, or self-report either).

@@ -44,6 +44,7 @@ namespace UnityBridge.Editor
         static BridgeServer()
         {
             IndexStore.Load(); // pure file I/O — safe before any Tick() has run
+            ActionToken.EnsureExists(); // pure file I/O — same as above
             RegisterEndpoints();
             StartListener();
             EditorApplication.update += Tick;
@@ -64,6 +65,8 @@ namespace UnityBridge.Editor
             ObjectEndpoint.Register();
             LogsTailEndpoint.Register();
             PlaymodeEndpoint.Register();
+            ActPlaymodeEndpoint.Register();
+            ActRefreshEndpoint.Register();
         }
 
         static void StartListener()
@@ -209,6 +212,39 @@ namespace UnityBridge.Editor
                     return;
                 }
 
+                if (endpoint.Tier == "act")
+                {
+                    // v1.5: token check first (LOCKED ordering) — an
+                    // invalid/missing token always returns 401
+                    // unconditionally, before anything else (readyState,
+                    // pending-guard, idempotence) is even evaluated, so an
+                    // unauthenticated caller can't learn current state via
+                    // a 409/503 that would otherwise fire first.
+                    string presentedToken = ctx.Request.Headers["X-Bridge-Token"];
+                    if (!ActionToken.IsValid(presentedToken))
+                    {
+                        WriteJson(ctx, 401, new Dictionary<string, object> { { "error", "unauthorized" }, { "tier", "act" } });
+                        return;
+                    }
+
+                    string actReadyState = BridgeState.CachedReadyState;
+                    if (actReadyState != "ready" && actReadyState != "playmode")
+                    {
+                        // Never queue an action across a reload (LOCKED,
+                        // v1.5 brief "Failure modes") — same 503 shape as
+                        // the indexed tier's not-ready case.
+                        WriteJson(ctx, 503, new Dictionary<string, object>
+                        {
+                            { "tier", "act" }, { "error", "not_ready" }, { "readyState", actReadyState }
+                        });
+                        return;
+                    }
+
+                    var (actStatus, actBody) = ActionScheduler.Schedule(endpoint.BuildAct);
+                    WriteJson(ctx, actStatus, actBody);
+                    return;
+                }
+
                 var pending = new PendingRequest
                 {
                     Endpoint = endpoint,
@@ -300,6 +336,7 @@ namespace UnityBridge.Editor
 
         static void Tick()
         {
+            ActionScheduler.RunPendingIfAny(); // v1.5: apply any accepted /act action first
             IndexStore.RunFullScanIfNeeded();
             BridgeAssetPostprocessor.FlushIfDue();
             BridgeState.RefreshFromMainThread();

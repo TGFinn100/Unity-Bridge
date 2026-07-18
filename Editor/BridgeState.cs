@@ -17,6 +17,13 @@ namespace UnityBridge.Editor
         internal static volatile string CachedUnityVersion = "";
         internal static volatile string CachedProjectName = "";
 
+        // v1.5: whether a play-mode enter/exit toggle right now would
+        // trigger a domain reload — derived from Configurable Enter Play
+        // Mode settings, refreshed here (main thread) so /act/playmode/*
+        // handlers can read it from the request thread without touching
+        // EditorSettings directly. Best-effort per the v1.5 brief.
+        internal static volatile bool CachedWillReloadOnPlaymodeToggle = true;
+
         internal static void RefreshFromMainThread()
         {
             string state;
@@ -28,6 +35,8 @@ namespace UnityBridge.Editor
             SetReadyState(state);
             CachedUnityVersion = Application.unityVersion;
             CachedProjectName = Application.productName;
+            CachedWillReloadOnPlaymodeToggle = !(EditorSettings.enterPlayModeOptionsEnabled &&
+                EditorSettings.enterPlayModeOptions.HasFlag(EnterPlayModeOptions.DisableDomainReload));
         }
 
         internal static void MarkReloading()

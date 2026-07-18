@@ -98,3 +98,15 @@ Port binding: walks 17870→17879 on `HttpListenerException` (port taken),
 writes the bound port atomically (`.tmp` + `File.Replace`/`Move`) to
 `Library/UnityBridge/port` — clients read this file first, it's the
 authoritative discovery mechanism (LOCKED).
+
+**Permanent limitation, not a bug (confirmed 2026-07-18):** the bridge has
+no existence independent of the Unity Editor process it runs inside —
+there's no separate watchdog or supervisor. A genuine Editor crash and an
+in-progress domain reload are indistinguishable from any HTTP client's
+perspective; both present as a refused/reset connection, and the bridge has
+no mechanism to report on its own death. The client-side reconnect contract
+(30s ceiling) is the only defined boundary — past it, a caller should treat
+the bridge as unavailable and hand off to a human rather than inferring
+"still reloading" vs. "crashed." Diagnosing an actual crash requires reading
+`Logs/Editor.log` and `%LOCALAPPDATA%\Temp\Unity\Editor\Crashes\` directly
+on disk, entirely outside the bridge's own API surface.

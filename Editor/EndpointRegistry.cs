@@ -8,7 +8,7 @@ namespace UnityBridge.Editor
         public string Method;
         public string Path; // display path; "/help/{topic}" is display-only for the catch-all route
         public string TopicKey;
-        public string Tier; // "meta" | "indexed" | "live"
+        public string Tier; // "meta" | "indexed" | "live" | "act"
         public string Summary; // <=8 words, shown in the /help index
         public string[] Params;
         public string ExampleRequest;
@@ -16,7 +16,30 @@ namespace UnityBridge.Editor
         public int TimeoutMs;
         public bool IsTopicRoute;
         public string ParamPrefix; // e.g. "/help/" or "/asset/" — required when IsTopicRoute
-        public Func<BridgeRequestContext, Dictionary<string, object>> Handler;
+        public Func<BridgeRequestContext, Dictionary<string, object>> Handler; // meta/indexed/live only
+        public Func<ActBuildResult> BuildAct; // act tier only — see ActBuildResult
+    }
+
+    // What an act-tier endpoint's idempotence check + response building
+    // produces (v1.5 LOCKED "act" tier). Runs on the request thread, inside
+    // ActionScheduler's lock, touching only thread-safe cached state
+    // (BridgeState fields) — never the live Unity API directly, same
+    // main-thread-only discipline as every other tier. Status 202 means
+    // "accepted, MainThreadAction scheduled"; any other status (409
+    // already_in_state) means the action did not run and MainThreadAction
+    // is null.
+    internal readonly struct ActBuildResult
+    {
+        internal readonly int Status;
+        internal readonly Dictionary<string, object> Body;
+        internal readonly Action MainThreadAction;
+
+        internal ActBuildResult(int status, Dictionary<string, object> body, Action mainThreadAction = null)
+        {
+            Status = status;
+            Body = body;
+            MainThreadAction = mainThreadAction;
+        }
     }
 
     internal readonly struct BridgeRequestContext
