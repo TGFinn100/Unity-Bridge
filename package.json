@@ -1,8 +1,8 @@
 {
   "name": "com.dalstar.unitybridge",
-  "version": "1.0.0",
+  "version": "1.5.0",
   "displayName": "Unity Query Bridge",
-  "description": "Editor-only local HTTP API exposing Unity project and scene information for AI agent queries. Read-only in v1, zero player footprint.",
+  "description": "Editor-only local HTTP API exposing Unity project and scene information for AI agent queries, with token-authenticated play mode control and asset refresh. Zero player footprint.",
   "unity": "6000.5",
   "author": {
     "name": "dalstar"
