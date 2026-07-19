@@ -17,7 +17,7 @@ namespace UnityBridge.Editor
         public bool IsTopicRoute;
         public string ParamPrefix; // e.g. "/help/" or "/asset/" — required when IsTopicRoute
         public Func<BridgeRequestContext, Dictionary<string, object>> Handler; // meta/indexed/live only
-        public Func<ActBuildResult> BuildAct; // act tier only — see ActBuildResult
+        public Func<Dictionary<string, object>, ActBuildResult> BuildAct; // act tier only — see ActBuildResult. Takes the parsed POST body (null if none) — added v1.6 for /act/logs/watch's {name,pattern,capacity?}; playmode/refresh ignore it.
     }
 
     // What an act-tier endpoint's idempotence check + response building

@@ -34,7 +34,8 @@ namespace UnityBridge.Editor
         // contract makes precision unnecessary." A false-positive
         // willReload costs nothing since the client already treats any
         // post-/act refusal as a healthy reload.
-        static ActBuildResult Build()
+        // Unused param — see ActPlaymodeEndpoint.BuildEnter's comment.
+        static ActBuildResult Build(Dictionary<string, object> _)
         {
             var body = new Dictionary<string, object> { { "tier", "act" }, { "accepted", true }, { "willReload", true } };
             return new ActBuildResult(202, body, () => AssetDatabase.Refresh());

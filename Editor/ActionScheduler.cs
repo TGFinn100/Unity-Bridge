@@ -23,15 +23,20 @@ namespace UnityBridge.Editor
         static readonly object _gate = new object();
         static Action _pendingAction;
 
-        // Runs entirely inside the lock. buildAct() performs its own
-        // idempotence check against cached state and returns either a 202
-        // success (body + the actual main-thread action) or a conflict
+        // Runs entirely inside the lock. buildAct(requestBody) performs its
+        // own idempotence check against cached state and returns either a
+        // 202 success (body + the actual main-thread action) or a conflict
         // response (409 already_in_state, no action). If another action is
         // already pending, returns 409 action_pending WITHOUT calling
         // buildAct at all — LOCKED ordering (pending-check strictly before
         // idempotence-check): computing idempotence against a value that's
         // about to change by the pending action is pointless.
-        internal static (int status, Dictionary<string, object> body) Schedule(Func<ActBuildResult> buildAct)
+        //
+        // requestBody is threaded through (v1.6, for /act/logs/watch's
+        // {name,pattern,capacity?}) — playmode/refresh's buildAct simply
+        // ignores it, same as any handler ignoring an unused param.
+        internal static (int status, Dictionary<string, object> body) Schedule(
+            Func<Dictionary<string, object>, ActBuildResult> buildAct, Dictionary<string, object> requestBody)
         {
             lock (_gate)
             {
@@ -40,7 +45,7 @@ namespace UnityBridge.Editor
                     return (409, new Dictionary<string, object> { { "tier", "act" }, { "error", "action_pending" } });
                 }
 
-                var result = buildAct();
+                var result = buildAct(requestBody);
                 if (result.Status == 202) _pendingAction = result.MainThreadAction;
                 return (result.Status, result.Body);
             }

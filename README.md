@@ -383,3 +383,78 @@ normal usage over days, not a single retest.
   section as a permanent limitation (the bridge runs inside the Unity
   process with no separate watchdog, so it can never distinguish its own
   crash from a slow reload, or self-report either).
+- **2026-07-19 — `EditorApplication.isPlaying` is not a reliable "did this
+  reload happen because Play Mode was just entered" signal, despite the
+  v1.6 brief's mechanism assuming it was.** LOCKED text: "check
+  `EditorApplication.isPlaying` inside `BridgeServer`'s static constructor
+  ... `isPlaying == true` at that moment → this reload was caused by
+  entering Play Mode." Disproved by live acceptance testing: a watch
+  registered before entering Play Mode, and a raw log buffer with real
+  data, both had their oldest surviving record's timestamp predate the
+  `/act/playmode/enter` request itself by 30+ seconds, immediately after a
+  confirmed `readyState:"playmode"` transition — meaning the wipe never
+  fired on any entry tested, indistinguishable from a plain recompile.
+  `isPlaying` apparently doesn't read back `true` until sometime after this
+  reload's static constructors have already run. Fixed with the same
+  event-driven marker-file pattern `PlaymodeEndpoint` already used for its
+  own entry-timing marker: a new `LogPersistenceLifecycle.cs` writes
+  `Library/UnityBridge/entering_playmode` on
+  `PlayModeStateChange.ExitingEditMode` (fires synchronously *before* the
+  reload), and `BridgeServer`'s static ctor consumes (deletes) it once,
+  passing the resulting bool into `LogBuffer.Load(bool)`/
+  `LogWatchStore.Load(bool)`. Re-verified live after the fix: the raw
+  buffer's oldest record after a tightly-timed re-entry was the bridge's
+  own `readyState: compiling -> playmode` log line, timestamped at the
+  reload itself.
+- **2026-07-19 — the entering-Play-Mode marker must be consumed exactly
+  once per reload, by the caller, not independently by each store.** A
+  bug in the fix above's first attempt: both `LogBuffer.Load()` and
+  `LogWatchStore.Load()` called
+  `LogPersistenceLifecycle.ConsumeEnteringPlayModeMarker()` themselves —
+  since that method deletes the marker file on read, whichever store's
+  `Load()` ran first (in practice `LogWatchStore`, called first in
+  `BridgeServer`'s static ctor) consumed it correctly, but the second
+  (`LogBuffer`) then found no marker and silently skipped its own wipe.
+  Confirmed live: after a Play Mode entry, `log_watches/` was correctly
+  wiped but `log_buffer.jsonl` still held 30+-second-old data. Fixed by
+  computing the flag exactly once in `BridgeServer`'s static ctor and
+  passing it into both `Load()` calls as a parameter.
+- **2026-07-19 — entering Play Mode must not delete a watch's own
+  registration, only its accumulated records.** A second, more consequential
+  bug in the wipe mechanism: the original `LogWatchStore.WipeAll()` deleted
+  the entire `log_watches/` directory, including `manifest.json` — so a
+  watch registered immediately before entering Play Mode (the v1.6 brief's
+  own documented idiom: register → `/act/playmode/enter` → `GET
+  /logs/watches` to confirm it's active) vanished the instant Play Mode
+  started, before it could ever observe the run it was registered for. The
+  brief's wording only ever says persisted *log data* is wiped at entry,
+  and its own skill-file note ("don't expect a watch registered before a
+  test run to still hold data from a *previous* run") presupposes the watch
+  itself survives. Fixed: `Load(bool enteringPlayMode)` always loads watch
+  *definitions* from `manifest.json`; only `enteringPlayMode == true` skips
+  reading old records and rewrites each watch's `.jsonl` empty instead.
+  Re-verified live: a watch's `createdAt` was identical before and after a
+  tightly-timed re-entry (proving the same definition, not a re-registration),
+  while its records reset from 383 real entries to a fresh count matching
+  only the new session's elapsed time.
+- **2026-07-19 — the debounced disk-write timer was a starvation trap under
+  continuous logging, not a working debounce.** Both `LogBuffer.OnLogMessage`
+  and `LogWatchStore.TryRoute` re-armed their shared `_lastDirtyTime` timer
+  on *every* new message, not just the first since the last flush. Under
+  genuinely continuous chatty logging (a message every ~10ms, deliberately
+  used for this acceptance test at the user's request specifically to stress
+  "under load" per acceptance criterion 2's own wording) the timer's
+  250ms-of-quiet condition never held, so `FlushIfDue()` never once decided
+  it was safe to write — confirmed live: `log_buffer.jsonl` had zero bytes
+  on disk after several seconds of a session producing ~200 messages/sec
+  in memory, and only ever got saved via the guaranteed
+  `OnBeforeAssemblyReload` flush at a reload boundary, never during a
+  long-running session. This masked itself in earlier testing precisely
+  because every prior test scenario happened to end at a reload. Fixed by
+  arming the timer only on the transition into "dirty" (i.e. only when it
+  was previously unset), turning the mechanism into a throttle (flush at
+  least once per ~250ms regardless of continued activity) instead of a
+  debounce (flush only after a quiet gap, which sustained load never
+  produces). Re-verified live: both `log_buffer.jsonl` and a watch's
+  `.jsonl` had real, growing content on disk after 3 seconds of continuous
+  logging with zero reload involved.

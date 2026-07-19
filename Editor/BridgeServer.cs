@@ -45,6 +45,14 @@ namespace UnityBridge.Editor
         {
             IndexStore.Load(); // pure file I/O — safe before any Tick() has run
             ActionToken.EnsureExists(); // pure file I/O — same as above
+            // v1.6: consumed exactly ONCE here, not inside LogWatchStore/
+            // LogBuffer individually — each Load() call below reads the
+            // marker file and deletes it, so calling this per-store would
+            // let only the first one see it (real bug caught during
+            // acceptance testing, see LogPersistenceLifecycle's comment).
+            bool enteringPlayMode = LogPersistenceLifecycle.ConsumeEnteringPlayModeMarker();
+            LogWatchStore.Load(enteringPlayMode); // pure file I/O — wipes on Play Mode entry
+            LogBuffer.Load(enteringPlayMode); // pure file I/O — same wipe-on-Play-Mode-entry lifecycle
             RegisterEndpoints();
             StartListener();
             EditorApplication.update += Tick;
@@ -52,6 +60,7 @@ namespace UnityBridge.Editor
             AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
             EditorApplication.quitting += OnQuitting;
             EditorApplication.playModeStateChanged += PlaymodeEndpoint.OnPlayModeStateChanged;
+            EditorApplication.playModeStateChanged += LogPersistenceLifecycle.OnPlayModeStateChanged; // v1.6
             Application.logMessageReceivedThreaded += LogBuffer.OnLogMessage;
         }
 
@@ -67,6 +76,10 @@ namespace UnityBridge.Editor
             PlaymodeEndpoint.Register();
             ActPlaymodeEndpoint.Register();
             ActRefreshEndpoint.Register();
+            LogsWatchesEndpoint.Register();
+            LogsWatchEndpoint.Register();
+            ActLogsWatchEndpoint.Register();
+            ActLogsUnwatchEndpoint.Register();
         }
 
         static void StartListener()
@@ -240,7 +253,7 @@ namespace UnityBridge.Editor
                         return;
                     }
 
-                    var (actStatus, actBody) = ActionScheduler.Schedule(endpoint.BuildAct);
+                    var (actStatus, actBody) = ActionScheduler.Schedule(endpoint.BuildAct, parsedBody);
                     WriteJson(ctx, actStatus, actBody);
                     return;
                 }
@@ -339,6 +352,8 @@ namespace UnityBridge.Editor
             ActionScheduler.RunPendingIfAny(); // v1.5: apply any accepted /act action first
             IndexStore.RunFullScanIfNeeded();
             BridgeAssetPostprocessor.FlushIfDue();
+            LogBuffer.FlushIfDue(); // v1.6: debounced disk persistence
+            LogWatchStore.FlushIfDue(); // v1.6: debounced disk persistence
             BridgeState.RefreshFromMainThread();
 
             while (_queue.TryDequeue(out var pending))
@@ -379,6 +394,14 @@ namespace UnityBridge.Editor
 
         static void OnBeforeAssemblyReload()
         {
+            // v1.6: force any debounced-but-not-yet-written log data to disk
+            // before the domain reload discards static state — otherwise a
+            // message logged less than the debounce window before a
+            // recompile could be lost even though the recompile itself
+            // isn't supposed to wipe persisted log data (LOCKED acceptance
+            // criterion 3).
+            LogBuffer.ForceFlush();
+            LogWatchStore.ForceFlush();
             BridgeState.MarkReloading();
             StopListener();
         }

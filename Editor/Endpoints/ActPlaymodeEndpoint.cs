@@ -64,7 +64,10 @@ namespace UnityBridge.Editor
             });
         }
 
-        static ActBuildResult BuildEnter()
+        // Unused Dictionary<string,object> param: v1.6 threads the parsed
+        // POST body through every BuildAct for /act/logs/watch's benefit;
+        // playmode has no body params, so it's ignored here.
+        static ActBuildResult BuildEnter(Dictionary<string, object> _)
         {
             if (TryCooldownReject(out var cooldownResult)) return cooldownResult;
 
@@ -84,7 +87,7 @@ namespace UnityBridge.Editor
             return new ActBuildResult(202, body, () => EditorApplication.isPlaying = true);
         }
 
-        static ActBuildResult BuildExit()
+        static ActBuildResult BuildExit(Dictionary<string, object> _)
         {
             if (TryCooldownReject(out var cooldownResult)) return cooldownResult;
 

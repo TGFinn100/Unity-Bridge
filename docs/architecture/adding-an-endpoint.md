@@ -16,13 +16,17 @@ explanation if you need it.
 - **`act`** — mutates Editor state (v1.5). Requires `X-Bridge-Token` auth,
   goes through `ActionScheduler`'s single-pending-action guard, and follows
   the accepted-then-reconnect contract (202 sent before the change runs,
-  deferred to the next `Tick()`). Set `BuildAct` (not `Handler`) to a
-  `Func<ActBuildResult>` that only reads pre-cached state and returns
-  either a 409 conflict or a 202 + deferred `Action`. Rare — only add a new
-  `act` endpoint for a genuine Editor mutation, not a read. See
-  `routing-and-tiers.md`'s `act` tier section before adding one; the guard
-  and cooldown patterns there (`ActionScheduler`, `ActionToken`) are shared
-  infrastructure, reuse them rather than re-deriving.
+  deferred to the next `Tick()`) — **unless the mutation never reloads**
+  (v1.6's `/act/logs/watch`/`/unwatch`: still deferred to `Tick()` for
+  consistency, but `willReload` is `false` and the caller polls a GET
+  endpoint instead of reconnecting). Set `BuildAct` (not `Handler`) to a
+  `Func<Dictionary<string,object>, ActBuildResult>` — receives the parsed
+  POST body (null if none, v1.6) — that only reads pre-cached state and
+  returns either a 409/400/404 rejection or a 202 + deferred `Action`. Rare
+  — only add a new `act` endpoint for a genuine Editor mutation, not a
+  read. See `routing-and-tiers.md`'s `act` tier section before adding one;
+  the guard and cooldown patterns there (`ActionScheduler`, `ActionToken`)
+  are shared infrastructure, reuse them rather than re-deriving.
 
 See `routing-and-tiers.md` for why each tier dispatches the way it does.
 
@@ -30,8 +34,8 @@ See `routing-and-tiers.md` for why each tier dispatches the way it does.
 
 A static `Register()` building one `EndpointInfo` and calling
 `EndpointRegistry.Add(...)`, plus a static `Handle(BridgeRequestContext ctx)`
-(meta/indexed/live) or `BuildAct()` returning `ActBuildResult` (act tier
-only — see step 1). Required `EndpointInfo` fields, and why `/help` needs
+(meta/indexed/live) or `BuildAct(Dictionary<string,object> body)` returning
+`ActBuildResult` (act tier only — see step 1). Required `EndpointInfo` fields, and why `/help` needs
 each one, are in `help-generation.md`. If the endpoint takes a path
 parameter (like `/asset/{guid}` or `/object/{id}`), set `IsTopicRoute = true`
 and `ParamPrefix = "/yourpath/"` — see `routing-and-tiers.md`'s router

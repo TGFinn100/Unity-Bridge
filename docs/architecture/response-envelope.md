@@ -16,9 +16,10 @@ consumer is a model).
 - `"accepted"` / `"willReload"`: act-tier only, on a 202. `willReload` is
   best-effort (`/act/refresh` always reports `true`; `/act/playmode/*`
   derives it from Configurable Enter Play Mode settings via
-  `BridgeState.CachedWillReloadOnPlaymodeToggle`) — see `routing-and-tiers.md`'s
-  `act` tier section for the accepted-then-reconnect contract this
-  supports.
+  `BridgeState.CachedWillReloadOnPlaymodeToggle`; v1.6's
+  `/act/logs/watch`/`/act/logs/unwatch` always report `false` — neither ever
+  triggers a domain reload) — see `routing-and-tiers.md`'s `act` tier
+  section for the accepted-then-reconnect contract this supports.
 
 ## The truncated/total/hint trio (LOCKED)
 
@@ -76,6 +77,16 @@ fits before inventing a third pattern.
     `{"tier":"act","error":"already_in_state","current":...}`.
   - `/act/playmode/*` only: a toggle within 1000ms of the last accepted one
     → 429 `{"tier":"act","error":"cooldown","retryAfterMs":...}`.
+  - **v1.6, `/act/logs/watch`/`/act/logs/unwatch` only:**
+    - Missing/blank `name` or `pattern`, or a non-positive `capacity` → 400
+      `{"tier":"act","error":"invalid_request","detail":...}`.
+    - `/act/logs/watch` with a `name` already registered → 409
+      `{"tier":"act","error":"already_watching","name":...}`.
+    - `/act/logs/watch` with a pattern that fails `Regex` compilation → 400
+      `{"tier":"act","error":"invalid_pattern","detail":...}` (the .NET
+      regex engine's own exception message).
+    - `/act/logs/unwatch` with an unregistered `name` → 404
+      `{"tier":"act","error":"not_watching","name":...}`.
 
 ## `MiniJson.Write`'s type-conversion gotcha
 

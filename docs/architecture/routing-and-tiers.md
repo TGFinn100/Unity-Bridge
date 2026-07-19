@@ -11,6 +11,12 @@ lifecycle). There is no separate "dispatcher" class beyond these two.
   `Summary` (≤8 words), `Params`, `ExampleRequest`, `ExampleResponseAbbrev`,
   `TimeoutMs`, `IsTopicRoute`/`ParamPrefix`, `Handler` (meta/indexed/live
   only), `BuildAct` (act tier only — see the `act` tier section below).
+  **v1.6:** `BuildAct`'s signature is `Func<Dictionary<string,object>,
+  ActBuildResult>`, not the zero-arg `Func<ActBuildResult>` v1.5 shipped
+  with — it now receives the parsed POST body (null if none), added so
+  `/act/logs/watch` can read `{name,pattern,capacity?}`.
+  `ActPlaymodeEndpoint`/`ActRefreshEndpoint` simply ignore the parameter,
+  same as any handler ignoring an unused arg.
 - `BridgeRequestContext` — passed to every handler: `Topic` (captured
   path-param segment), `Body` (parsed POST JSON, null if none), `Query`
   (parsed GET query string, added Phase 3 — never null, empty dict if
@@ -48,7 +54,7 @@ needs manual wiring beyond its own file. See `adding-an-endpoint.md`.
 
 ## The four tiers
 
-**`meta`** (`/ping`, `/help`, `/help/{topic}`) — answered directly on the
+**`meta`** (`/ping`, `/help`, `/help/{topic}`, `/logs/watches` — v1.6) — answered directly on the
 background request thread, bypassing the main-thread queue entirely.
 Deliberate: Unity can run a "forced synchronous recompile" that blocks
 `EditorApplication.update` (and therefore `Tick()`) for the whole
@@ -65,7 +71,8 @@ means broken, fail fast"), gated on `IndexStore.IsReady` (503
 safety comes from `IndexStore`'s own internal lock, not from this dispatch.
 `TimeoutMs` in practice: 1000 (fail-fast, per the LOCKED rationale above).
 
-**`live`** (`/scene/summary`, `/object/{id}`, `/logs/tail`, `/playmode`) —
+**`live`** (`/scene/summary`, `/object/{id}`, `/logs/tail`, `/playmode`,
+`/logs/watch/{name}` — v1.6) —
 the fallthrough case: everything that isn't `meta` or `indexed` routes
 through the `ConcurrentQueue<PendingRequest>` + `EditorApplication.update`
 dispatcher (`Tick()`). The request thread enqueues a `PendingRequest`
@@ -79,11 +86,13 @@ real Unity API access just sets `Tier = "live"` — no `BridgeServer` change
 is needed**, this path already exists and is exercised by all four Phase 3
 endpoints.
 
-**`act`** (`/act/playmode/enter`, `/act/playmode/exit`, `/act/refresh`,
-v1.5) — mutating endpoints, dispatched entirely differently from the three
-read-only tiers above. An `act` endpoint sets `BuildAct` (a
-`Func<ActBuildResult>`) instead of `Handler`, and `HandleRequest` branches
-on `endpoint.Tier == "act"` before it ever reaches the main-thread queue:
+**`act`** (`/act/playmode/enter`, `/act/playmode/exit`, `/act/refresh` —
+v1.5; `/act/logs/watch`, `/act/logs/unwatch` — v1.6) — mutating endpoints,
+dispatched entirely differently from the three read-only tiers above. An
+`act` endpoint sets `BuildAct` (a `Func<Dictionary<string,object>,
+ActBuildResult>` — see the `EndpointInfo` note above) instead of `Handler`,
+and `HandleRequest` branches on `endpoint.Tier == "act"` before it ever
+reaches the main-thread queue:
 
 1. **Token check first (LOCKED ordering)** — `X-Bridge-Token` header
    checked against `ActionToken.IsValid`; invalid/missing → unconditional
@@ -94,13 +103,15 @@ on `endpoint.Tier == "act"` before it ever reaches the main-thread queue:
    or `"playmode"`; anything else (compiling/indexing/reloading) → 503
    `{"tier":"act","error":"not_ready","readyState":...}`. An action is
    never queued across a reload.
-3. **`ActionScheduler.Schedule(endpoint.BuildAct)`** — runs the endpoint's
-   `BuildAct` under `ActionScheduler`'s single lock. `BuildAct` only reads
-   pre-cached thread-safe state (same discipline as every other tier) and
-   returns an `ActBuildResult`: either a 409 conflict (e.g.
-   `already_in_state`) with no action, or a 202 `{"accepted":true,...}`
-   plus an `Action` deferred to the next `Tick()`. If another action is
-   already pending, `Schedule` returns 409
+3. **`ActionScheduler.Schedule(endpoint.BuildAct, parsedBody)`** — runs the
+   endpoint's `BuildAct(parsedBody)` under `ActionScheduler`'s single lock.
+   `BuildAct` only reads pre-cached thread-safe state (same discipline as
+   every other tier) and returns an `ActBuildResult`: either a 409 conflict
+   (e.g. `already_in_state`), a 400/404 validation failure (v1.6:
+   `/act/logs/watch`'s missing-field/invalid-regex checks,
+   `/act/logs/unwatch`'s unknown-name check) with no action, or a 202
+   `{"accepted":true,...}` plus an `Action` deferred to the next `Tick()`.
+   If another action is already pending, `Schedule` returns 409
    `{"tier":"act","error":"action_pending"}` without calling `BuildAct` at
    all (LOCKED ordering — pending-check strictly before idempotence-check).
    `ActionScheduler.RunPendingIfAny()` runs the deferred `Action` on the
@@ -114,6 +125,14 @@ down the listener, so there's no way to respond *after* the change without
 racing the reload. Callers treat a 202 as "the action was scheduled;
 reconnect and poll `/ping` to observe the result," never as confirmation
 the change already happened.
+
+**v1.6 exception:** `/act/logs/watch`/`/act/logs/unwatch` also defer their
+mutation to the next `Tick()` (same `ActBuildResult`/`MainThreadAction`
+plumbing, for consistency — not because the file I/O needs the main thread)
+but never trigger a domain reload, so their 202 body always carries
+`"willReload":false`. The accepted-then-*poll* half of the contract still
+holds — a caller confirms the watch is live via `GET /logs/watches` rather
+than a reconnect.
 
 `ActPlaymodeEndpoint` additionally layers a 1000ms cooldown shared between
 enter/exit, checked before the idempotence check: a toggle within the
@@ -130,15 +149,44 @@ above, kept for `EndpointInfo` shape consistency with the other tiers).
 after every domain reload — all static state (the queue, cached endpoint
 list, etc.) resets for free. The constructor also subscribes:
 `CompilationPipeline.compilationStarted` → `BridgeState.MarkCompiling()`,
-`AssemblyReloadEvents.beforeAssemblyReload` → `BridgeState.MarkReloading()`
-+ stop the listener (clean socket teardown — this is what makes GATE 1's
-"no address-in-use" requirement hold), `EditorApplication.quitting` → stop
+`AssemblyReloadEvents.beforeAssemblyReload` → **(v1.6) `LogBuffer.ForceFlush()`
++ `LogWatchStore.ForceFlush()`, then** `BridgeState.MarkReloading()` + stop
+the listener (clean socket teardown — this is what makes GATE 1's "no
+address-in-use" requirement hold), `EditorApplication.quitting` → stop
 listener, `EditorApplication.playModeStateChanged` →
-`PlaymodeEndpoint.OnPlayModeStateChanged` (Phase 3, entry-time marker file),
+`PlaymodeEndpoint.OnPlayModeStateChanged` (Phase 3, entry-time marker file)
+**and (v1.6) `LogPersistenceLifecycle.OnPlayModeStateChanged`** (a second,
+independent subscriber to the same event — see below),
 `Application.logMessageReceivedThreaded` → `LogBuffer.OnLogMessage` (Phase
-3, console ring buffer). None of these need explicit unsubscription — a
-domain reload discards the old assembly (and every delegate pointing into
-it) wholesale.
+3, console ring buffer; v1.6: now also consults `LogWatchStore.TryRoute`
+first — see `shared-helpers.md`). None of these need explicit
+unsubscription — a domain reload discards the old assembly (and every
+delegate pointing into it) wholesale.
+
+**v1.6:** the constructor also calls
+`LogPersistenceLifecycle.ConsumeEnteringPlayModeMarker()` exactly once,
+then passes the resulting bool to both `LogWatchStore.Load(bool)` and
+`LogBuffer.Load(bool)` (pure file I/O, same "safe before any Tick()"
+discipline as `IndexStore.Load()`/`ActionToken.EnsureExists()` right above
+them). `true` means this reload was caused by entering Play Mode, so both
+stores start their records fresh (a watch's own *definition* survives —
+only its accumulated records reset, see `shared-helpers.md`).
+
+This does **not** check `EditorApplication.isPlaying` — the original v1.6
+brief's assumed mechanism, disproved by live acceptance testing 2026-07-19:
+`isPlaying` doesn't read back `true` at static-ctor time during an
+entry-triggered reload, making it indistinguishable from a plain recompile
+or an exit reload. `LogPersistenceLifecycle` uses the same event-driven
+marker-file pattern `PlaymodeEndpoint` already relies on instead:
+`PlayModeStateChange.ExitingEditMode` fires synchronously *before* the
+reload that follows an entry into Play Mode, so a marker written there and
+consumed (deleted) by the very next `Load()` reliably identifies exactly
+that one reload. The marker must be consumed exactly once per reload, by
+the caller (`BridgeServer`), not independently by each store — an earlier
+version of this fix had each store call
+`ConsumeEnteringPlayModeMarker()` itself, so whichever ran first silently
+ate the signal from the second. Full incident writeup in the package
+README's `DECISIONS` heading.
 
 Port binding: walks 17870→17879 on `HttpListenerException` (port taken),
 writes the bound port atomically (`.tmp` + `File.Replace`/`Move`) to

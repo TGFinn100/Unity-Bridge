@@ -78,7 +78,7 @@ single source of truth for "where does `Library/UnityBridge/` live."
 Anything writing a bridge-owned file under `Library/` should go through
 this rather than recomputing the path.
 
-## `LogBuffer.cs` (Phase 3)
+## `LogBuffer.cs` (Phase 3; persistence added v1.6)
 
 Bounded ring buffer (capacity 1000, `Queue<LogEntryRecord>`, one `lock`)
 fed by `Application.logMessageReceivedThreaded` (subscribed once in
@@ -89,6 +89,119 @@ Unity upgrades, at the cost of only capturing entries logged after the
 bridge starts (acceptable: the bridge is already running before any agent
 session begins). `Snapshot()` returns entries oldest-first; callers wanting
 newest-first (e.g. `/logs/tail`) reverse after filtering/taking `n`.
+
+`OnLogMessage` first calls `LogWatchStore.TryRoute(message, time)` — a
+message matching an active watch is condensed into that watch's own store
+and never reaches `LogBuffer` at all (LOCKED "Raw-buffer overlap": diverted,
+not double-counted).
+
+**v1.6 persistence** (`Library/UnityBridge/log_buffer.jsonl`, previously
+purely in-memory): `Load(bool enteringPlayMode)` — pure file I/O, called
+from `BridgeServer`'s static constructor before any `Tick()`, with a flag
+computed once by `LogPersistenceLifecycle.ConsumeEnteringPlayModeMarker()`
+(see `routing-and-tiers.md`'s Domain reload survival section for why this
+isn't `EditorApplication.isPlaying`, and why the flag is computed once by
+the caller rather than by `LogBuffer` itself) — reads the file back on a
+plain recompile/Play-Mode-exit reload, or deletes it when `enteringPlayMode`
+is true.
+
+Writes are throttled, not merely debounced: `OnLogMessage` sets an in-lock
+`_dirty` flag and arms `_lastDirtyTime` **only on the transition into
+dirty** (not on every message); `FlushIfDue()` (called every `Tick()`)
+writes the whole snapshot via `JsonLinesIO.WriteLines` once ≥250ms has
+passed since `_lastDirtyTime` was armed. Re-arming on every message instead
+of only the first was a real bug caught during v1.6 acceptance testing
+2026-07-19: under continuous chatty logging (a message every ~10ms) the
+timer never went stale, so the "quiet long enough to flush" condition never
+held and the on-disk file was never written except at a reload boundary —
+confirmed live, a session with ~200 messages/sec had genuinely zero bytes
+on disk after several seconds despite 1000 in-memory entries. `ForceFlush()`
+— the authoritative dirty-check-and-write, checked/cleared entirely inside
+the lock so a concurrent message is never silently dropped — is called
+unconditionally from `OnBeforeAssemblyReload` (bypassing the debounce
+window) so a message logged less than 250ms before a recompile still
+reaches disk (LOCKED acceptance criterion 3: a plain recompile must not
+lose data), and from `FlushIfDue()` once the throttle window has elapsed.
+
+## `LogWatchStore.cs` (v1.6)
+
+Named, condensed log watches — `Editor/LogWatchStore.cs` (flat under
+`Editor/`, alongside `LogBuffer.cs`, not under `Editor/Index/`; unrelated
+subsystem despite the superficial jsonl-persistence similarity to
+`IndexStore`). One `Dictionary<string, WatchEntry>` (name → definition +
+compiled `Regex` + a per-watch `Queue<LogWatchRecord>` ring buffer trimmed
+to that watch's `capacity`), one lock guarding all of it — matches can
+arrive on any thread via `LogBuffer.OnLogMessage`.
+
+- **`TryRoute(message, time)`** — tries every active watch's regex against
+  the message; on a match, builds a `values` dict from the regex's *named*
+  capture groups only (`GetGroupNames()` filtered to skip the numeric
+  auto-groups), enqueues a `LogWatchRecord`, marks that watch dirty. Returns
+  whether anything matched (see `LogBuffer.OnLogMessage` above). Arms
+  `_lastDirtyTime` only on the transition into dirty, same throttle-not-
+  debounce fix as `LogBuffer.OnLogMessage` — see that entry above for the
+  bug this avoids.
+- **`Register`/`Unregister`** — the deferred `MainThreadAction` behind
+  `POST /act/logs/watch`/`/act/logs/unwatch` (see `routing-and-tiers.md`'s
+  `act` tier section). Writes `log_watches/manifest.json` (all active
+  definitions, atomic temp+replace) and that watch's own
+  `log_watches/<name>.jsonl`; `Unregister` also deletes the `.jsonl` (LOCKED:
+  "no discovery path remains to an orphaned file").
+- **`FlushIfDue()`/`ForceFlush()`** — same throttle-plus-forced-flush-at-
+  reload-boundary pattern as `LogBuffer`, but per-watch: `ForceFlush()`
+  scans every watch's `Dirty` flag inside the lock (not an external
+  "anything pending" flag) so a match concurrent with a flush is never lost,
+  and only rewrites the `.jsonl` files that actually changed.
+- **`Load(bool enteringPlayMode)`** — watch *definitions* are always loaded
+  from `manifest.json` regardless of `enteringPlayMode`; only each watch's
+  *records* are affected — `enteringPlayMode == true` starts each with an
+  empty in-memory queue and rewrites its `.jsonl` empty, instead of reading
+  the old records back. A second real bug caught during v1.6 acceptance
+  testing 2026-07-19: the original version deleted the entire
+  `log_watches/` directory (including `manifest.json`) on entry, so a watch
+  registered right before entering Play Mode — the LOCKED brief's own
+  documented idiom — vanished the instant Play Mode started, before it
+  could ever observe the run it was registered for. A corrupt manifest
+  entry (bad regex, unparsable jsonl) is skipped with a logged warning
+  rather than discarding every other watch — same self-heal spirit as
+  `IndexStore.Load()`.
+- **`CompileValidate(pattern)`** — just `new Regex(pattern)`; callers (only
+  `ActLogsWatchEndpoint`) catch the exception and turn it into 400
+  `invalid_pattern`. Pure regex compilation, no Unity API, safe on any
+  thread — this is what makes "validated at registration time" (LOCKED)
+  possible without deferring to the main thread.
+
+## `LogPersistenceLifecycle.cs` (v1.6)
+
+The reliable "did this reload happen because Play Mode was just entered?"
+signal `LogBuffer.Load()`/`LogWatchStore.Load()` both need, replacing the
+v1.6 brief's original (disproved) `EditorApplication.isPlaying`-at-ctor-time
+mechanism — full incident in `routing-and-tiers.md`'s Domain reload
+survival section. Event-driven, mirroring `PlaymodeEndpoint`'s own
+entry-timing marker: `OnPlayModeStateChanged` (subscribed independently
+from `BridgeServer`'s static ctor, alongside `PlaymodeEndpoint`'s own
+subscription to the same event) writes a marker file
+(`Library/UnityBridge/entering_playmode`) on
+`PlayModeStateChange.ExitingEditMode`, which fires synchronously *before*
+the domain reload that follows an entry into Play Mode.
+`ConsumeEnteringPlayModeMarker()` checks for and deletes the marker,
+returning whether it was present — called **exactly once**, from
+`BridgeServer`'s static constructor, with the resulting bool threaded into
+both `Load()` calls. Do not call `ConsumeEnteringPlayModeMarker()` from
+either store directly: it consumes (deletes) the marker on read, so two
+independent callers in the same static-ctor run would mean only the first
+one ever sees it — this was itself a real bug caught during v1.6 acceptance
+testing, see the method's own doc comment.
+
+On-disk layout, all under `Library/UnityBridge/log_watches/`:
+`manifest.json` (`{watches:[{name,pattern,capacity,createdAt}]}`) and one
+`<name>.jsonl` per watch (`{values:{...named groups...},time}` per line,
+ring-buffer order). `GET /logs/watches` (meta tier) and `GET
+/logs/watch/{name}` (live tier — not in the original v1.6 task brief; added
+after a real gap was found and flagged to the user, see that endpoint file's
+own header comment) are the only sanctioned read paths — same "don't read
+`Library/UnityBridge/` files directly" rule as the index store's
+`meta.json`.
 
 ## `SerializedValueExtractor.cs` (Phase 3)
 
