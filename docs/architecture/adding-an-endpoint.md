@@ -58,7 +58,8 @@ inventing new wording per endpoint.
 ## 4. Build the response body
 
 - Always include `"tier"`.
-- `"indexedAt"` if indexed-tier.
+- `"indexedAt"` if indexed-tier (also carried by `/ping`, a meta-tier
+  exception — see `response-envelope.md`).
 - Call `BridgeState.AddFrameIfPlaying(body)` if live-tier.
 - Cap size: `ResponseCapping.ApplyListCap` for one flat list; if your shape
   doesn't fit that (multiple lists, a nested tree), see the two existing

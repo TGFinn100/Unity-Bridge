@@ -223,6 +223,7 @@ unhandled (arrays, generic nested types, gradients, curves) collapses to a
 `"<PropertyType>"` placeholder rather than attempting a full recursive
 serializer — deliberate, per the context-efficiency pillar (an unbounded
 array could blow a response on its own). Only ever called for a single
-object's own components, never recursively over a subtree — see
-`ObjectEndpoint`'s depth-vs-values split in `adding-an-endpoint.md` if
-extending this.
+object's own components, never recursively over a subtree — see the two
+nested-shape precedents (including `ObjectEndpoint`'s depth-vs-values
+split) in `response-envelope.md`'s "The truncated/total/hint trio" section
+if extending this.

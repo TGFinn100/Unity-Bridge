@@ -60,9 +60,11 @@ Deliberate: Unity can run a "forced synchronous recompile" that blocks
 `EditorApplication.update` (and therefore `Tick()`) for the whole
 compile+reload window. If meta requests went through the queue, `/ping`
 could never report `readyState:"compiling"` during exactly the window
-that matters. Meta handlers may only read pre-cached, thread-safe state
-(`BridgeState`'s `volatile` fields) — never call into the Unity API
-directly. `TimeoutMs` in practice: 5000.
+that matters. Meta handlers may only read pre-cached, thread-safe state — `BridgeState`'s
+`volatile` fields for most (`/ping`), but a handler may instead guard its
+own state with a dedicated lock, as `/logs/watches` does via
+`LogWatchStore`'s internal `_gate` (v1.6). Either way, never call into the
+live Unity API directly. `TimeoutMs` in practice: 5000.
 
 **`indexed`** (`/query`, `/asset/{guid}`) — also answered directly on the
 request thread (LOCKED per the task brief: "no main thread involved — slow

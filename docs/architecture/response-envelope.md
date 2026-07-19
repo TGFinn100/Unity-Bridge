@@ -7,8 +7,10 @@ consumer is a model).
 ## Fields every successful response carries
 
 - `"tier"`: `"meta" | "indexed" | "live" | "act"` — always present.
-- `"indexedAt"`: ISO timestamp, indexed-tier responses only
-  (`IndexStore.LastUpdatedIso`).
+- `"indexedAt"`: ISO timestamp (`IndexStore.LastUpdatedIso`) — every
+  indexed-tier response, plus `/ping` (meta tier), which also reports it
+  alongside `schemaVersion` so a caller can check index freshness without
+  an indexed-tier round trip.
 - `"frame"`: `Time.frameCount`, added by `BridgeState.AddFrameIfPlaying(body)`
   to any live-tier response when `EditorApplication.isPlaying` — the
   brief's "live answers are frame-stale by definition in play mode"

@@ -27,7 +27,7 @@ namespace UnityBridge.Editor
                 Path = "/logs/watch/{name}",
                 TopicKey = "logs-watch",
                 Tier = "live",
-                Summary = "Condensed records for one named log watch, newest first",
+                Summary = "Condensed records for one log watch, newest first",
                 Params = new[]
                 {
                     "name (string, required in URL path): watch name, from GET /logs/watches",
