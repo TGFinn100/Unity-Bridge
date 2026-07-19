@@ -78,8 +78,11 @@ fits before inventing a third pattern.
   - `/act/playmode/*` only: a toggle within 1000ms of the last accepted one
     → 429 `{"tier":"act","error":"cooldown","retryAfterMs":...}`.
   - **v1.6, `/act/logs/watch`/`/act/logs/unwatch` only:**
-    - Missing/blank `name` or `pattern`, or a non-positive `capacity` → 400
+    - `/act/logs/watch` with a missing/blank `name` or `pattern`, or a
+      non-positive `capacity` → 400
       `{"tier":"act","error":"invalid_request","detail":...}`.
+      `/act/logs/unwatch` with a missing/blank `name` → the same shape
+      (unwatch has no `pattern`/`capacity` params to validate).
     - `/act/logs/watch` with a `name` already registered → 409
       `{"tier":"act","error":"already_watching","name":...}`.
     - `/act/logs/watch` with a pattern that fails `Regex` compilation → 400

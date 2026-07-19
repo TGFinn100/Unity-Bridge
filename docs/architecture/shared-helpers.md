@@ -54,19 +54,24 @@ process/webpage guessing the port and firing a mutation," not secret
 management for a real credential (same reasoning as v1's "no auth needed
 while read-only" note).
 
-## `ActionScheduler.cs` (v1.5)
+## `ActionScheduler.cs` (v1.5; signature extended v1.6)
 
 Single-pending-action guard + deferred main-thread execution, shared across
-all `act`-tier endpoints. `Schedule(Func<ActBuildResult> buildAct)` runs
+all `act`-tier endpoints. `Schedule(Func<Dictionary<string,object>,
+ActBuildResult> buildAct, Dictionary<string,object> requestBody)` runs
 entirely inside one lock: if an action is already pending, returns 409
 `action_pending` without calling `buildAct` at all (LOCKED ordering —
 pending-check strictly before idempotence-check, since computing
 idempotence against a value that's about to change by the pending action is
-pointless); otherwise calls `buildAct()`, and if it returns a 202 stores its
-`MainThreadAction` as the pending action. `RunPendingIfAny()` — called at
-the top of every `Tick()`, before `IndexStore.RunFullScanIfNeeded()` — pops
-and invokes the pending action (if any) on the main thread. This is what
-lets an `/act` handler respond 202 on the request thread before the actual
+pointless); otherwise calls `buildAct(requestBody)`, and if it returns a
+202 stores its `MainThreadAction` as the pending action. `requestBody` was
+added in v1.6 (previously a zero-arg `Func<ActBuildResult>`, called as
+`buildAct()`) so `/act/logs/watch` can read `{name,pattern,capacity?}` from
+the parsed POST body — `ActPlaymodeEndpoint`/`ActRefreshEndpoint` just
+ignore the parameter. `RunPendingIfAny()` — called at the top of every
+`Tick()`, before `IndexStore.RunFullScanIfNeeded()` — pops and invokes the
+pending action (if any) on the main thread. This is what lets an `/act`
+handler respond 202 on the request thread before the actual
 `EditorApplication.isPlaying` toggle or `AssetDatabase.Refresh()` call runs.
 See `routing-and-tiers.md`'s `act` tier section for the full request
 lifecycle this participates in.
