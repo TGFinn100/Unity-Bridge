@@ -139,8 +139,14 @@ than a reconnect.
 `ActPlaymodeEndpoint` additionally layers a 1000ms cooldown shared between
 enter/exit, checked before the idempotence check: a toggle within the
 window of the last accepted one → 429
-`{"tier":"act","error":"cooldown","retryAfterMs":...}`. See
-`shared-helpers.md` for `ActionToken.cs` and `ActionScheduler.cs`.
+`{"tier":"act","error":"cooldown","retryAfterMs":...}`. **v1.7:**
+`BuildEnter` (enter only, not exit) layers one more check, after the
+idempotence check and before scheduling — `BridgeState.CachedCompileErrorCount
+> 0` → 409 `{"tier":"act","error":"compile_errors_present",...}`, action
+never scheduled. Full LOCKED order for `/act/playmode/enter`: cooldown →
+already_in_state → compile_errors_present → schedule 202. See
+`shared-helpers.md` for `ActionToken.cs`, `ActionScheduler.cs`, and
+`BridgeState`'s v1.7 compile-cache fields.
 
 `TimeoutMs` in practice: 5000 (unused in the request-thread-direct dispatch
 above, kept for `EndpointInfo` shape consistency with the other tiers).

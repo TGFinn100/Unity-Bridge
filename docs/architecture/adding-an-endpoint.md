@@ -6,8 +6,10 @@ explanation if you need it.
 
 ## 1. Decide the tier
 
-- **`meta`** — only reads pre-cached, thread-safe state (`BridgeState`).
-  Never calls the Unity API. Rare — `/ping`/`/help` are the only examples.
+- **`meta`** — only reads pre-cached, thread-safe state (`BridgeState`), or
+  a handler-owned lock (v1.6's `/logs/watches`, via `LogWatchStore`'s own
+  `_gate`). Never calls the Unity API. Rare — `/ping`, `/help`,
+  `/help/{topic}`, and `/logs/watches` are the only examples.
 - **`indexed`** — only reads `IndexStore`. Answered directly on the request
   thread, 1000ms budget, 503 if the index isn't ready yet.
 - **`live`** — touches the Unity API (scene, GameObjects, EditorApplication,
