@@ -57,6 +57,7 @@ namespace UnityBridge.Editor
             StartListener();
             EditorApplication.update += Tick;
             CompilationPipeline.compilationStarted += OnCompilationStarted;
+            CompilationPipeline.assemblyCompilationFinished += OnAssemblyCompilationFinished; // v1.7
             AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
             EditorApplication.quitting += OnQuitting;
             EditorApplication.playModeStateChanged += PlaymodeEndpoint.OnPlayModeStateChanged;
@@ -390,6 +391,15 @@ namespace UnityBridge.Editor
         static void OnCompilationStarted(object obj)
         {
             BridgeState.MarkCompiling();
+            BridgeState.ResetCompileState(); // v1.7: same moment, LOCKED
+        }
+
+        // v1.7: fires per-assembly with that assembly's own CompilerMessage[]
+        // — a single compile pass can call this multiple times, hence
+        // BridgeState accumulating rather than replacing.
+        static void OnAssemblyCompilationFinished(string assemblyPath, UnityEditor.Compilation.CompilerMessage[] messages)
+        {
+            BridgeState.AccumulateCompileMessages(messages);
         }
 
         static void OnBeforeAssemblyReload()

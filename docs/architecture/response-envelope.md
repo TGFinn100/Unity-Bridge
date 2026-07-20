@@ -22,6 +22,16 @@ consumer is a model).
   `/act/logs/watch`/`/act/logs/unwatch` always report `false` — neither ever
   triggers a domain reload) — see `routing-and-tiers.md`'s `act` tier
   section for the accepted-then-reconnect contract this supports.
+- **v1.7, `/ping` only:** `"compileErrorCount"` / `"compileWarningCount"`
+  (int, true full counts) / `"compileMessages"` (capped list, errors before
+  warnings — see `shared-helpers.md`'s `BridgeState` entry) /
+  `"compileMessagesTruncated"` (bool) / `"compileMessagesTotal"` (int, true
+  count before capping) / `"compileMessagesHint"` (string, present only when
+  truncated: `"read Editor.log directly for full output"`). Deliberately
+  separate field names from the truncated/total/hint trio below — `/ping`
+  isn't a list-response endpoint in that trio's existing sense, and reusing
+  the bare names would create ambiguity if `/ping` ever grows a second
+  cappable field later (LOCKED, v1.7 task brief).
 
 ## The truncated/total/hint trio (LOCKED)
 
@@ -79,6 +89,12 @@ fits before inventing a third pattern.
     `{"tier":"act","error":"already_in_state","current":...}`.
   - `/act/playmode/*` only: a toggle within 1000ms of the last accepted one
     → 429 `{"tier":"act","error":"cooldown","retryAfterMs":...}`.
+  - **v1.7, `/act/playmode/enter` only:** a compile error is currently
+    cached (`BridgeState.CachedCompileErrorCount > 0`) → 409
+    `{"tier":"act","error":"compile_errors_present","compileErrorCount":...,"compileMessages":[...]}`,
+    checked after `already_in_state`, before scheduling — same root bug the
+    `/ping` fields above fix, not a separate one. `/act/playmode/exit` and
+    `/act/refresh` are unaffected by this check.
   - **v1.6, `/act/logs/watch`/`/act/logs/unwatch` only:**
     - `/act/logs/watch` with a missing/blank `name` or `pattern`, or a
       non-positive `capacity` → 400

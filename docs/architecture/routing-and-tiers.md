@@ -150,7 +150,14 @@ above, kept for `EndpointInfo` shape consistency with the other tiers).
 `[InitializeOnLoad]` on `BridgeServer` re-runs its whole static constructor
 after every domain reload — all static state (the queue, cached endpoint
 list, etc.) resets for free. The constructor also subscribes:
-`CompilationPipeline.compilationStarted` → `BridgeState.MarkCompiling()`,
+`CompilationPipeline.compilationStarted` → `BridgeState.MarkCompiling()` +
+**(v1.7) `BridgeState.ResetCompileState()`**,
+`CompilationPipeline.assemblyCompilationFinished` → **(v1.7)
+`BridgeState.AccumulateCompileMessages(messages)`** — fires per-assembly
+with that assembly's own `CompilerMessage[]`, the structured error/warning
+signal surfaced on `/ping` and checked by `/act/playmode/enter` (see
+`shared-helpers.md`'s `BridgeState` entry and `response-envelope.md`'s
+field/error-shape additions),
 `AssemblyReloadEvents.beforeAssemblyReload` → **(v1.6) `LogBuffer.ForceFlush()`
 + `LogWatchStore.ForceFlush()`, then** `BridgeState.MarkReloading()` + stop
 the listener (clean socket teardown — this is what makes GATE 1's "no

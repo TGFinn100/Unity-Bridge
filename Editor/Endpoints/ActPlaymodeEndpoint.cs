@@ -79,6 +79,22 @@ namespace UnityBridge.Editor
                 });
             }
 
+            // v1.7: same root bug the /ping fields fix, not a separate one
+            // — a compile failure must never be scheduled into play mode
+            // silently. Checked after already_in_state, before scheduling
+            // (LOCKED order); action never scheduled, matching the
+            // already_in_state shape's own contract that a 409 always means
+            // nothing ran.
+            if (BridgeState.CachedCompileErrorCount > 0)
+            {
+                return new ActBuildResult(409, new Dictionary<string, object>
+                {
+                    { "tier", "act" }, { "error", "compile_errors_present" },
+                    { "compileErrorCount", BridgeState.CachedCompileErrorCount },
+                    { "compileMessages", BridgeState.CompileMessagesAsObjectList() }
+                });
+            }
+
             var body = new Dictionary<string, object>
             {
                 { "tier", "act" }, { "accepted", true }, { "willReload", BridgeState.CachedWillReloadOnPlaymodeToggle }

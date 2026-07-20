@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEditor;
+using UnityEditor.Compilation;
 using UnityEngine;
 
 namespace UnityBridge.Editor
@@ -24,6 +25,33 @@ namespace UnityBridge.Editor
         // EditorSettings directly. Best-effort per the v1.5 brief.
         internal static volatile bool CachedWillReloadOnPlaymodeToggle = true;
 
+        // v1.7: structured compile error/warning signal, sourced from
+        // CompilationPipeline.assemblyCompilationFinished (Unity's own
+        // compiler output, not text scraped from Editor.log/Debug.Log —
+        // see the task brief's "Mechanism" section for why the latter is
+        // unreliable for build-failure-class errors like CS1654).
+        internal const int CompileMessageCap = 20;
+        // Declared before CachedCompileMessages below deliberately — C#
+        // initializes static fields in textual declaration order, so a
+        // forward reference here would silently capture null (a real bug
+        // caught live: CachedCompileMessages held null until the first
+        // AccumulateCompileMessages call, and /ping's Count on the null
+        // snapshot threw a NullReferenceException before any compile had
+        // even happened).
+        static readonly IReadOnlyList<string> EmptyCompileMessages = new List<string>();
+        internal static volatile int CachedCompileErrorCount = 0;
+        internal static volatile int CachedCompileWarningCount = 0;
+        internal static volatile IReadOnlyList<string> CachedCompileMessages = EmptyCompileMessages;
+
+        // Main-thread-only accumulators (compilationStarted/
+        // assemblyCompilationFinished both fire on the main thread, same as
+        // the existing MarkCompiling() call site) — never read directly off
+        // this thread; CachedCompileMessages is republished as a fresh list
+        // on every update so a concurrent reader always sees a consistent
+        // snapshot via the volatile reference.
+        static readonly List<string> _accumulatedErrors = new List<string>();
+        static readonly List<string> _accumulatedWarnings = new List<string>();
+
         internal static void RefreshFromMainThread()
         {
             string state;
@@ -42,6 +70,70 @@ namespace UnityBridge.Editor
         internal static void MarkReloading()
         {
             SetReadyState("reloading");
+        }
+
+        // Reset at CompilationPipeline.compilationStarted — the same
+        // moment MarkCompiling() already fires (LOCKED) — so a fresh
+        // compile pass always starts from a clean slate before any
+        // assemblyCompilationFinished event for it has run.
+        internal static void ResetCompileState()
+        {
+            _accumulatedErrors.Clear();
+            _accumulatedWarnings.Clear();
+            CachedCompileErrorCount = 0;
+            CachedCompileWarningCount = 0;
+            CachedCompileMessages = EmptyCompileMessages;
+        }
+
+        // Accumulates across every assemblyCompilationFinished call between
+        // one compilationStarted and the next ResetCompileState() — a
+        // single compile pass can touch multiple assemblies, each firing
+        // this event separately (LOCKED). CachedCompileErrorCount/
+        // CachedCompileWarningCount always reflect the true full counts;
+        // only the displayed CachedCompileMessages list is capped, errors
+        // ordered before warnings so an error can never be pushed out by
+        // warning noise.
+        internal static void AccumulateCompileMessages(CompilerMessage[] messages)
+        {
+            foreach (var m in messages)
+            {
+                string formatted = $"{m.file}: {m.message}";
+                if (m.type == CompilerMessageType.Error)
+                {
+                    _accumulatedErrors.Add(formatted);
+                    CachedCompileErrorCount++;
+                }
+                else if (m.type == CompilerMessageType.Warning)
+                {
+                    _accumulatedWarnings.Add(formatted);
+                    CachedCompileWarningCount++;
+                }
+            }
+
+            var capped = new List<string>(CompileMessageCap);
+            foreach (var e in _accumulatedErrors)
+            {
+                if (capped.Count >= CompileMessageCap) break;
+                capped.Add(e);
+            }
+            foreach (var w in _accumulatedWarnings)
+            {
+                if (capped.Count >= CompileMessageCap) break;
+                capped.Add(w);
+            }
+            CachedCompileMessages = capped;
+        }
+
+        // Shared by /ping and /act/playmode/enter's 409 body — both need
+        // the same capped list as a MiniJson-writable List<object>
+        // (MiniJson.Write only dispatches IEnumerable<object>, not
+        // IEnumerable<string> — see response-envelope.md).
+        internal static List<object> CompileMessagesAsObjectList()
+        {
+            var snapshot = CachedCompileMessages; // one volatile read — atomic, consistent snapshot
+            var list = new List<object>(snapshot.Count);
+            foreach (var s in snapshot) list.Add(s);
+            return list;
         }
 
         // Event-driven, unlike RefreshFromMainThread's isCompiling check: that

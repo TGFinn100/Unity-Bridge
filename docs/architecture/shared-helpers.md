@@ -31,6 +31,24 @@ API directly.
 - `AddFrameIfPlaying(body)` (Phase 3) — adds `body["frame"] =
   Time.frameCount` when `EditorApplication.isPlaying`. Every live-tier
   handler calls this after building its response body.
+- **v1.7:** `CachedCompileErrorCount` / `CachedCompileWarningCount`
+  (`volatile int`) / `CachedCompileMessages` (`volatile
+  IReadOnlyList<string>`, capped at `CompileMessageCap` = 20, errors always
+  ordered before warnings) — Unity's own structured compiler output, not
+  text scraped from `Editor.log`. `ResetCompileState()` is called from
+  `BridgeServer.OnCompilationStarted`, the same moment `MarkCompiling()`
+  fires. `AccumulateCompileMessages(CompilerMessage[])` is called from a new
+  `CompilationPipeline.assemblyCompilationFinished` subscription
+  (`BridgeServer.OnAssemblyCompilationFinished`) — fires once per assembly,
+  so a single compile pass touching multiple assemblies calls this multiple
+  times; counts always accumulate the true total, only the displayed
+  message list is capped. `CompileMessagesAsObjectList()` converts the
+  cached `List<string>` to a `List<object>` — required because
+  `MiniJson.Write` only dispatches `IEnumerable<object>`, not
+  `IEnumerable<string>` (see `response-envelope.md`'s `MiniJson.Write`
+  gotcha) — shared by `/ping` and `/act/playmode/enter`'s
+  `compile_errors_present` 409 body so both serialize the identical capped
+  list via one code path.
 
 ## `MiniJson.cs`
 

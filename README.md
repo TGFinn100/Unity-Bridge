@@ -74,6 +74,32 @@ out); not reproduced on this clean pass, not chased further per the
 "diagnose, fix, rerun from iteration 1" rule once a genuine 10/10 was
 achieved.
 
+### Rerun 2026-07-20 (v1.7 acceptance criterion 7)
+
+**Result:** 10/10 PASS. Required because v1.7's new `CompilationPipeline`
+hook and `BridgeState` fields sit adjacent to GATE 1's declared blast
+radius, same reasoning as v1.5's rerun above. First attempt failed outright
+at iteration 1 (no disruption observed within 30s — the polling script's
+own pacing gate was skipped since it ran non-interactively, likely a
+timing mismatch on the first alt-tab); reran clean from iteration 1 per
+the no-partial-passes rule.
+
+| Iteration | Reconnect time | Refused attempts | States seen | Port |
+|-----------|----------------|-------------------|-------------|------|
+| 1 | 17.2s | 1 | ready, compiling | 17870 |
+| 2 | 5.1s | 1 | ready, compiling | 17870 |
+| 3 | 5.0s | 1 | ready, compiling | 17870 |
+| 4 | 4.9s | 1 | ready, compiling | 17870 |
+| 5 | 4.8s | 1 | ready, compiling | 17870 |
+| 6 | 4.9s | 1 | ready, compiling | 17870 |
+| 7 | 4.8s | 1 | ready, compiling | 17870 |
+| 8 | 5.5s | 1 | ready, compiling | 17870 |
+| 9 | 5.1s | 1 | ready, compiling | 17870 |
+| 10 | 4.5s | 1 | ready, compiling | 17870 |
+
+Same cold-start-slower-iteration-1 pattern as every prior GATE 1 run on
+this project.
+
 ## GATE 1.5 RESULTS
 
 **Date:** 2026-07-18 · **Unity version:** 6000.5.2f1 · **Result:** 5/5 PASS
@@ -458,3 +484,63 @@ normal usage over days, not a single retest.
   produces). Re-verified live: both `log_buffer.jsonl` and a watch's
   `.jsonl` had real, growing content on disk after 3 seconds of continuous
   logging with zero reload involved.
+- **2026-07-19/20 — v1.7: a static-field initialization-order bug made
+  `/ping` 500 with a `NullReferenceException` before any compile had even
+  happened.** `BridgeState.CachedCompileMessages`'s field initializer
+  referenced `EmptyCompileMessages`, declared *later* in the same file. C#
+  initializes static fields in textual declaration order, so at the point
+  `CachedCompileMessages`'s initializer ran, `EmptyCompileMessages` was
+  still its own default (`null`) — `CachedCompileMessages` silently
+  captured `null` and stayed `null` until the first
+  `AccumulateCompileMessages` call. `/ping`'s `Count` on that `null`
+  snapshot threw immediately on the very first live test. Confirmed live
+  against False Signal's bridge instance right after the recompile that
+  introduced it. Fixed by moving `EmptyCompileMessages`'s declaration above
+  `CachedCompileMessages`'s.
+- **2026-07-20 — v1.7: `compileWarningCount`/`compileMessages` for a
+  warnings-only compile are structurally unobservable via `/ping` — not a
+  code bug, a gap in the brief's own retention design.** A compile with
+  zero errors (clean, or warnings-only) is exactly the case where Unity
+  proceeds with its normal domain reload after compiling — and that reload
+  resets every `BridgeState` static field back to its field-initializer
+  default, including the just-accumulated warning count, before any HTTP
+  client can poll `/ping` for it. `compileErrorCount` doesn't share this
+  problem only because Unity deliberately *skips* the domain reload when a
+  compile actually fails ("`Editor compiler errors found. Will not reload
+  assemblies`"), so the in-memory state from a failed pass survives long
+  enough to be observed. Confirmed live during acceptance criterion 5
+  testing (False Signal, 2026-07-20): two independent assemblies each
+  produced a real `CS0219` warning (both visible twice in `Editor.log`,
+  including Tundra's own end-of-build summary — the compiler genuinely
+  emitted them), yet the very next `/ping` read back
+  `compileWarningCount:0`. The brief's "Retention & reset semantics"
+  section (in-memory only, no persistence, matching `CachedReadyState`'s
+  current-state-only semantics) didn't account for this — its intended
+  scope was "no history across passes," not "the current pass's own
+  warning data can vanish before anyone reads it." User's call: ship as a
+  documented limitation rather than adding a persistence mechanism the
+  brief explicitly rejected (for a different reason). Logged in the skill
+  file's critical-correction section: don't treat `compileWarningCount:0`
+  as proof a compile had no warnings.
+- **2026-07-20 — v1.7's skill-file cold-trigger test needed two real fixes,
+  not zero.** Acceptance criterion 8 (a fresh session asked "did that last
+  refresh actually compile clean?" should check `/ping`'s
+  `compileErrorCount`, not just `readyState`) failed cold twice before
+  passing. First failure: the `unity-bridge` skill's own frontmatter
+  `description` had no trigger phrase matching "did that compile clean?"
+  style questions at all — added one. Second failure, after that fix: the
+  *separate* `unity-editor-log-tailing` skill's description is a much
+  stronger, near-verbatim match for the same question ("verify a Unity
+  script or package change actually compiled clean... trigger after any
+  Unity C# script edit... whenever it's unclear if a change
+  compiled/resolved successfully") and kept winning the routing, sending
+  the fresh session straight to raw `Editor.log` reading — exactly the
+  failure-prone path v1.7 exists to replace — without it ever touching the
+  bridge. Fixed by adding a cross-reference *in that other skill's own
+  file*, deferring to `/ping`'s `compileErrorCount`/`compileMessages` first
+  when the bridge is installed, reserving log-tailing for when the bridge
+  is absent or `compileMessagesTruncated` hides the needed message. Third
+  cold attempt (a fresh subagent, no priming) passed clean: checked
+  `/ping`, cited `compileErrorCount`, and correctly diagnosed a real
+  environment issue (a stale port file for a since-closed Editor) instead
+  of false-positiving.
