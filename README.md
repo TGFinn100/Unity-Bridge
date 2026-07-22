@@ -100,6 +100,71 @@ the no-partial-passes rule.
 Same cold-start-slower-iteration-1 pattern as every prior GATE 1 run on
 this project.
 
+### Rerun 2026-07-22 (v2 acceptance criterion 8)
+
+**Result:** 10/10 PASS. Required because v2's mutation dispatch branch sits
+inside `HandleRequest`, within GATE 1's declared blast radius — same
+reasoning as every prior rerun. Specifically prompted by two v2-session
+fixes touching `BridgeServer.cs` (the `MiniJson`/`Infinity` fix and the
+`Undo.IncrementCurrentGroup()` fix, see DECISIONS), even though neither
+touches port binding, listener lifecycle, or `readyState` logic.
+
+| Iteration | Reconnect time | Refused attempts | States seen | Port |
+|-----------|----------------|-------------------|-------------|------|
+| 1 | 5.3s | 1 | ready, compiling | 17870 |
+| 2 | 4.7s | 1 | ready, compiling | 17870 |
+| 3 | 4.7s | 1 | ready, compiling | 17870 |
+| 4 | 4.3s | 1 | ready, compiling | 17870 |
+| 5 | 4.3s | 1 | ready, compiling | 17870 |
+| 6 | 4.3s | 1 | ready, compiling | 17870 |
+| 7 | 6.4s | 1 | ready, compiling | 17870 |
+| 8 | 4.2s | 1 | ready, compiling | 17870 |
+| 9 | 4.3s | 1 | ready, compiling | 17870 |
+| 10 | 4.2s | 1 | ready, compiling | 17870 |
+
+Same cold-start-slower-iteration-1 pattern as every prior run. Run by the
+user directly from a PowerShell terminal (`bash ./gate1-torture.sh`, since
+this session's shell was PowerShell rather than Git Bash — the script
+itself is unchanged).
+
+## GATE 2 RESULTS
+
+**Date:** 2026-07-22 · **Unity version:** 6000.5.2f1 · **Result:** 5/5 PASS
+(`gate2-mutation.sh`, sandbox project `Unity MCP`)
+
+Scripted sequence per iteration: create → add component (`AudioSource`) →
+set field (`m_Volume`) → duplicate → reparent (dup under root) → rename →
+remove component → delete without `recursive` (must 409 `has_children`) →
+delete with `recursive:true` (cleans up both). All 8 mutation endpoints
+exercised every iteration; both delete branches confirmed every time. Fully
+unattended — no domain reload happens anywhere in this sequence, same
+reasoning as GATE 1.5.
+
+Run twice this session: once before the `Undo.IncrementCurrentGroup()` fix
+(passed — that bug affects the Undo *stack*, not the HTTP contract this gate
+checks) and once after (also passed, confirming the fix didn't disturb
+response correctness). Only the post-fix run is the one of record; both are
+noted here since it's relevant history.
+
+First attempt at writing this gate script had a self-inflicted bug, not an
+endpoint bug: it guessed `AudioSource`'s volume field was named `"volume"`;
+the real serialized name is `"m_Volume"` (Unity's actual internal field
+naming, same convention as `Rigidbody.m_Mass`). The endpoint correctly
+rejected the wrong name with `400 unknown_field` — which is exactly what it
+should do — so this was the script being wrong, not the code under test.
+Fixed the script, reran clean.
+
+**Deliberately not scripted here:** acceptance criterion 6 (every mutation
+appears on the Editor's native Undo stack, Ctrl+Z reverts it correctly).
+`Undo.PerformUndo()` is a C# Editor API with no HTTP-accessible equivalent
+in any of the 8 LOCKED v2 endpoints — a real gap in the brief's own Gate
+coverage section, flagged to the user rather than silently worked around.
+Resolved by user decision: this gate stays fully unattended and checks only
+the HTTP contract; Undo verification is a separate human-driven Ctrl+Z
+check at sign-off (see criterion 6 in ACCEPTANCE EVIDENCE below, and the
+Undo bug writeup in DECISIONS — that check is what found the bug in the
+first place).
+
 ## GATE 1.5 RESULTS
 
 **Date:** 2026-07-18 · **Unity version:** 6000.5.2f1 · **Result:** 5/5 PASS
@@ -159,6 +224,16 @@ normal usage over days, not a single retest.
   `MainGame.unity` (via the `scenePrefabInstances` join). Cross-checked
   `Player.prefab`'s GUID (`712685e6cf91eac4291a76de99dc3404`) directly
   against `assets.jsonl` before trusting the query result.
+- **v2, criteria 1-11 — 2026-07-22.** All 11 walked live against this
+  sandbox. Full detail (evidence per criterion) is in the sandbox project's
+  `TODO.md` under "v2 build" per this file's own single-source-of-truth
+  split (build/verification narrative lives there; this heading is for
+  cross-project acceptance evidence specifically). Headline items: criterion
+  1's rotation echo is a genuine, pre-existing gap (`SerializedValueExtractor`
+  has no `Quaternion` case, confirmed via Inspector instead of the HTTP
+  response); criterion 6 (Undo) is what surfaced the
+  `Undo.IncrementCurrentGroup()` bug below — the check that's supposed to
+  confirm correctness is what found the real defect, not a rubber stamp.
 
 ## DECISIONS
 
@@ -544,3 +619,81 @@ normal usage over days, not a single retest.
   `/ping`, cited `compileErrorCount`, and correctly diagnosed a real
   environment issue (a stale port file for a since-closed Editor) instead
   of false-positiving.
+- **2026-07-22 — v2: new synchronous mutation dispatch, not the existing
+  202-then-Tick `act` pattern.** LOCKED execution model: the 8 GameObject-
+  lifecycle/component-mutation endpoints stay `Tier = "act"` (same
+  auth/readiness gating, same wire `"tier":"act"`) but dispatch through a
+  new mechanism — `EndpointInfo.Synchronous` selects `BuildMutation`
+  (`Func<Dictionary<string,object>, BridgeHandlerResult>`) over `BuildAct`,
+  a dedicated `_mutationQueue` (mirrors the live tier's blocking-queue
+  pattern) drained by `DrainMutationQueue()` in `Tick()`, and
+  `ActionScheduler.TryEnterMutation()`/`ExitMutation()` (a new
+  `_mutationInFlight` bool under the same `_gate` lock, checked alongside
+  `_pendingAction` in both directions) reserve the mutation slot for the
+  whole synchronous round trip rather than just the enqueue step. Full
+  detail in `docs/architecture/routing-and-tiers.md`'s "Synchronous
+  mutation dispatch (v2)" section — not repeated here per this file's own
+  rule (structural patterns belong in the architecture docs; this heading
+  is for one-off decisions and deviations).
+- **2026-07-22 — `MiniJson.Write` emitted invalid JSON for non-finite float
+  values; a pre-existing bug, not introduced by v2.** Found live testing
+  acceptance criterion 2: `HingeJoint`'s real Unity default for
+  `m_BreakForce` is `float.PositiveInfinity` ("never breaks").
+  `WriteValue`'s float/double cases called plain `.ToString()`, producing
+  the bare token `Infinity` in the response body — not valid JSON (the spec
+  has no `Infinity`/`NaN` literal), and `MiniJson.Parse` itself couldn't
+  even read it back (no case for a leading `I`/`N` character). This affects
+  any endpoint reading a float field that happens to be non-finite —
+  including v1's `GET /object/{id}?components=values` — just never
+  exercised before a component with a non-finite default got read live.
+  Fixed: `float`/`double` values that are `NaN` or `±Infinity` are now
+  written as a quoted JSON string (`"Infinity"`/`"-Infinity"`/`"NaN"`)
+  instead of a bare invalid token — keeps the value informative rather than
+  silently clamping to an arbitrary finite number. Verified live: the same
+  `HingeJoint` response now parses as valid JSON end-to-end.
+- **2026-07-22 — no v2 mutation endpoint called `Undo.IncrementCurrentGroup()`,
+  so close-together mutations silently collapsed into one undo step.**
+  Found live testing acceptance criterion 6: after `/act/gameobject/create`
+  immediately followed by `/act/gameobject/rename` (two separate HTTP
+  calls, both part of one agent turn), a single Ctrl+Z in the Editor
+  removed the created object entirely instead of just reverting the
+  rename — confirmed via `Edit > Redo` reading "Redo Create GameObject"
+  after the one undo. Root cause: Unity only starts a new Undo *group*
+  boundary when something explicitly requests one; in normal Editor use
+  that happens automatically between distinct UI interactions, but nothing
+  did it for these HTTP-triggered, scripted mutations, so two calls
+  arriving within the same implicit group merged into a single undo step —
+  this is the standard, documented Unity gotcha for programmatic Undo
+  usage, not specific to this codebase. Fixed centrally in
+  `BridgeServer.DrainMutationQueue()` — one `Undo.IncrementCurrentGroup()`
+  call per dequeued mutation, before invoking `BuildMutation` — rather than
+  in each of the 8 endpoint files individually, so a future 9th mutation
+  endpoint can't forget it. Re-verified live across create+rename and
+  component-add+set-field: each mutation is now its own cleanly isolated
+  undo step. One related non-bug encountered during this investigation,
+  worth recording so it doesn't get re-investigated as a regression later:
+  clicking to select a GameObject in the Editor is itself undoable
+  (native Unity behavior) — a Ctrl+Z pressed right after manually
+  selecting a freshly-mutated object can undo the *selection*, not the
+  mutation, before a second Ctrl+Z reaches the actual mutation.
+- **2026-07-22 — `gate1-torture.sh` rerun from PowerShell, not Git Bash.**
+  This session's shell was PowerShell; the script is bash and doesn't run
+  directly there. Worked around with `bash ./gate1-torture.sh` (Git for
+  Windows' bundled bash is on `PATH`) — no change to the script itself.
+  Noted here in case a future session hits the same "`./foo.sh` not
+  recognized" friction in PowerShell.
+- **2026-07-22 — `gate2-mutation.sh`'s own first draft had a wrong field
+  name, not an endpoint bug.** Assumed `AudioSource`'s volume field was
+  named `"volume"`; the real `SerializedProperty` name is `"m_Volume"`
+  (checked live via `/act/component/add`'s own response). `/act/component/
+  set-field` correctly rejected the wrong name with `400 unknown_field` —
+  exactly the intended behavior — so this was the test script being wrong,
+  not the code under test. Fixed the script, both gate runs after that were
+  clean.
+- **2026-07-22 — `FINAL.md` deleted for real, closing a stale claim in the
+  sandbox's `TODO.md`.** The v2 build-start entry there had said `FINAL.md`
+  "deleted per the protocol's own rule once finalized," but the file was
+  still on disk when this session started (the deletion never actually
+  happened, only the record claimed it had). User's explicit choice:
+  delete it now to match what the record already said, over the
+  alternative of correcting the record to say it was kept.
