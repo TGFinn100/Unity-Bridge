@@ -172,3 +172,15 @@ won't). **Always convert Unity structs to a `Dictionary<string,object>` (or
 a primitive) yourself before handing a value to a response body** — see
 `SerializedValueExtractor` in `shared-helpers.md` for the reference
 implementation of this conversion for serialized component fields.
+
+**v2 fix: non-finite `float`/`double` values are written as a quoted JSON
+string, not a bare token.** JSON has no `Infinity`/`NaN` literal — the
+naive `f.ToString(CultureInfo.InvariantCulture)` a plain numeric case would
+use produces the bare token `Infinity`/`-Infinity`/`NaN` for a non-finite
+value, which isn't valid JSON (`MiniJson.Parse` itself can't even read it
+back). Found live via `HingeJoint.m_BreakForce`, whose real Unity default
+is `float.PositiveInfinity` ("never breaks") — a pre-existing bug, not
+introduced by v2, just never exercised by a component with a non-finite
+default before. `WriteValue`'s `float`/`double` cases now check
+`IsNaN`/`IsInfinity` first and route through `WriteString` (quoted) instead
+of the bare-token path when true.

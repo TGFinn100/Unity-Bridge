@@ -197,10 +197,17 @@ token-check-then-readiness-gate sequence every `act` endpoint already runs:
    `Tick()` to actually run the work before it can respond.
 3. **`Tick()` drains `_mutationQueue`** via `DrainMutationQueue()`, called
    right after `ActionScheduler.RunPendingIfAny()` (same priority as
-   existing deferred act actions, before the index scan) — runs
-   `BuildMutation(body)` directly on the main thread, safe to touch the
-   Unity API. Exception mapping: `MutationRejection` (carries its own full
-   `(status, body)`, checked first) → that status/body verbatim;
+   existing deferred act actions, before the index scan). For each dequeued
+   mutation, calls `Undo.IncrementCurrentGroup()` first — a real bug fix,
+   not part of the original design: Unity only starts a new Undo group
+   boundary when something explicitly asks for one, which nothing did for
+   these HTTP-triggered mutations, so two mutations arriving close together
+   (e.g. create then rename) silently collapsed into a single undo step.
+   Called once per dequeued mutation here, centrally, rather than in each of
+   the 8 endpoint files, so a future 9th mutation endpoint can't forget it.
+   Then runs `BuildMutation(body)` directly on the main thread, safe to
+   touch the Unity API. Exception mapping: `MutationRejection` (carries its
+   own full `(status, body)`, checked first) → that status/body verbatim;
    `BridgeHttpException` (used for the id-resolution chain, reused verbatim
    from `ObjectEndpoint` — see `shared-helpers.md`'s `GameObjectResolver`
    entry) → the standard `{"error": message}` shape; anything else → 500.
