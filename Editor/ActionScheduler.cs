@@ -23,6 +23,18 @@ namespace UnityBridge.Editor
         static readonly object _gate = new object();
         static Action _pendingAction;
 
+        // v2: set for the duration of a synchronous mutation dispatch (from
+        // BridgeServer's HandleRequest reserving a slot through the
+        // matching Tick() actually running it) — a second field rather than
+        // reusing _pendingAction itself, since a mutation has no deferred
+        // Action to store (it runs directly, see BridgeServer's mutation
+        // queue). Checked alongside _pendingAction everywhere exclusivity
+        // matters, under the same _gate lock, so an act-tier Schedule() and
+        // a mutation's TryEnterMutation() block each other in both
+        // directions — "share ActionScheduler's existing single global
+        // lock" (LOCKED, v2 task brief "Concurrency").
+        static bool _mutationInFlight;
+
         // Runs entirely inside the lock. buildAct(requestBody) performs its
         // own idempotence check against cached state and returns either a
         // 202 success (body + the actual main-thread action) or a conflict
@@ -40,7 +52,7 @@ namespace UnityBridge.Editor
         {
             lock (_gate)
             {
-                if (_pendingAction != null)
+                if (_pendingAction != null || _mutationInFlight)
                 {
                     return (409, new Dictionary<string, object> { { "tier", "act" }, { "error", "action_pending" } });
                 }
@@ -63,6 +75,30 @@ namespace UnityBridge.Editor
                 _pendingAction = null;
             }
             action?.Invoke();
+        }
+
+        // v2: reserve the exclusive mutation slot for a synchronous
+        // dispatch. Returns false (caller responds 409 action_pending,
+        // nothing queued) if an act-tier action is scheduled-but-not-yet-
+        // applied, or another mutation is already in flight. Must be paired
+        // with ExitMutation() (caller's finally block) regardless of
+        // outcome, once reserved.
+        internal static bool TryEnterMutation()
+        {
+            lock (_gate)
+            {
+                if (_pendingAction != null || _mutationInFlight) return false;
+                _mutationInFlight = true;
+                return true;
+            }
+        }
+
+        internal static void ExitMutation()
+        {
+            lock (_gate)
+            {
+                _mutationInFlight = false;
+            }
         }
     }
 }

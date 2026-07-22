@@ -151,6 +151,77 @@ already_in_state → compile_errors_present → schedule 202. See
 `TimeoutMs` in practice: 5000 (unused in the request-thread-direct dispatch
 above, kept for `EndpointInfo` shape consistency with the other tiers).
 
+## Synchronous mutation dispatch (v2)
+
+The 8 GameObject-lifecycle/component-mutation endpoints (`/act/gameobject/*`,
+`/act/component/*`) are **`Tier = "act"`** — same auth, same readiness gate,
+same wire-visible `"tier":"act"` in every response body — but dispatch
+through a genuinely different mechanism from the 202-then-Tick pattern above.
+This is a real structural addition (LOCKED, v2 task brief acceptance
+criterion 11), not a routine new-endpoint-following-existing-pattern case.
+
+**Why not the existing pattern:** the accepted-then-reconnect contract exists
+because playmode/refresh/log-watch operations can trigger a domain reload,
+and their response is designed to return before the actual change runs. v2
+mutations never trigger a domain reload (creating a GameObject doesn't
+recompile anything), and the brief's mutation-response contract requires
+echoing back the resulting object/component state in the same round trip —
+which a fire-and-forget 202 can't do, since the state doesn't exist yet at
+202-response time.
+
+**`EndpointInfo.Synchronous`** (`bool`, default `false`) is the dispatch
+selector: `false` (every pre-v2 `act` endpoint) keeps the existing
+`BuildAct`/202/`ActionScheduler.Schedule`/deferred-`Action` path unchanged.
+`true` (all 8 v2 endpoints) sets `BuildMutation`
+(`Func<Dictionary<string,object>, BridgeHandlerResult>`) instead of
+`BuildAct`, and `HandleRequest` branches to a different flow after the same
+token-check-then-readiness-gate sequence every `act` endpoint already runs:
+
+1. **`ActionScheduler.TryEnterMutation()`** — reserves the exclusive
+   mutation slot under `ActionScheduler`'s existing `_gate` lock (LOCKED:
+   "share `ActionScheduler`'s existing single global lock"). Fails fast
+   (409 `action_pending`, nothing queued) if an act-tier action is
+   scheduled-but-not-yet-applied (`_pendingAction != null`) **or** another
+   mutation is currently in flight (`_mutationInFlight`) — a new bool field
+   alongside `_pendingAction`, checked in both directions: `Schedule()`
+   (existing act endpoints) now also checks `_mutationInFlight`, so a
+   mutation and a playmode/refresh/log-watch call block each other too, not
+   just mutation-vs-mutation.
+2. **Enqueue + block** — a `PendingMutation` (mirrors `PendingRequest`, but
+   simpler: no `Topic`/`Query`, since all 8 endpoints take a POST body only)
+   goes onto a dedicated `ConcurrentQueue<PendingMutation>` (`_mutationQueue`,
+   separate from the live tier's `_queue`). The request thread blocks on
+   `Tcs.Task.Wait(endpoint.TimeoutMs)` — same blocking-queue mechanism the
+   live tier already uses for `/object/{id}`, which is what "synchronous
+   main-thread dispatch" means in practice: the request thread waits for a
+   `Tick()` to actually run the work before it can respond.
+3. **`Tick()` drains `_mutationQueue`** via `DrainMutationQueue()`, called
+   right after `ActionScheduler.RunPendingIfAny()` (same priority as
+   existing deferred act actions, before the index scan) — runs
+   `BuildMutation(body)` directly on the main thread, safe to touch the
+   Unity API. Exception mapping: `MutationRejection` (carries its own full
+   `(status, body)`, checked first) → that status/body verbatim;
+   `BridgeHttpException` (used for the id-resolution chain, reused verbatim
+   from `ObjectEndpoint` — see `shared-helpers.md`'s `GameObjectResolver`
+   entry) → the standard `{"error": message}` shape; anything else → 500.
+4. **`ActionScheduler.ExitMutation()`** — released in the request thread's
+   `finally` block, only after `Tcs.Task` resolves (success or timeout) —
+   the reservation spans the *whole* synchronous round trip (enqueue through
+   `Tick()` actually running it), not just the enqueue step, per the LOCKED
+   "acquire the lock for the duration" execution model.
+
+Successful mutations return **200**, not 202 — the change has already
+happened by response time. `willReload` is never present on these responses
+(structurally always false, so omitted rather than always-false-and-
+misleading, matching the brief's own reasoning).
+
+**On timeout** (504, same shape as the other tiers'), the queued item is
+still drained eventually by a later `Tick()` — its result just gets
+discarded, same documented behavior as the live tier's `_queue` timeout
+case. `ActionScheduler.ExitMutation()` still runs (in the `finally`), so the
+mutation slot is free for a new request even though the original one is
+technically still pending in the queue.
+
 ## Domain reload survival
 
 `[InitializeOnLoad]` on `BridgeServer` re-runs its whole static constructor

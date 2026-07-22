@@ -134,5 +134,21 @@ namespace UnityBridge.Editor
                 default: return 0;
             }
         }
+
+        // v2: float-valued fields (position/rotation/scale components,
+        // Float-type set-field writes) need the same any-numeric-type
+        // coercion as ToLong above, just without truncating to an integer.
+        internal static double ToDouble(object value)
+        {
+            switch (value)
+            {
+                case double d: return d;
+                case float f: return f;
+                case long l: return l;
+                case int i: return i;
+                case string s: return double.Parse(s, CultureInfo.InvariantCulture);
+                default: return 0;
+            }
+        }
     }
 }

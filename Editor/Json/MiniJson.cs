@@ -202,10 +202,18 @@ namespace UnityBridge.Editor
                     sb.Append(l.ToString(CultureInfo.InvariantCulture));
                     break;
                 case float f:
-                    sb.Append(f.ToString(CultureInfo.InvariantCulture));
+                    // JSON has no Infinity/NaN literal — a bare token would
+                    // be invalid JSON that MiniJson.Parse itself couldn't
+                    // even read back. Found live (v2): HingeJoint's default
+                    // m_BreakForce is float.PositiveInfinity ("never
+                    // breaks"). Quoted as a string when non-finite so the
+                    // value stays informative rather than silently clamped.
+                    if (float.IsNaN(f) || float.IsInfinity(f)) WriteString(sb, f.ToString(CultureInfo.InvariantCulture));
+                    else sb.Append(f.ToString(CultureInfo.InvariantCulture));
                     break;
                 case double d:
-                    sb.Append(d.ToString(CultureInfo.InvariantCulture));
+                    if (double.IsNaN(d) || double.IsInfinity(d)) WriteString(sb, d.ToString(CultureInfo.InvariantCulture));
+                    else sb.Append(d.ToString(CultureInfo.InvariantCulture));
                     break;
                 case IDictionary<string, object> dict:
                     WriteObject(sb, dict);

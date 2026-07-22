@@ -21,6 +21,20 @@ namespace UnityBridge.Editor
         public DateTime EnqueuedAt;
     }
 
+    // v2: the synchronous-mutation counterpart to PendingRequest — simpler,
+    // since a mutation endpoint has no Topic/Query (all 8 take a POST body
+    // only) and BuildMutation already returns a full BridgeHandlerResult
+    // rather than needing InvokeHandler's Handler-plus-exception-mapping
+    // wrapper (that mapping still applies, just around BuildMutation
+    // instead — see BridgeServer.DrainMutationQueue).
+    internal sealed class PendingMutation
+    {
+        public Func<Dictionary<string, object>, BridgeHandlerResult> BuildMutation;
+        public Dictionary<string, object> Body;
+        public TaskCompletionSource<BridgeHandlerResult> Tcs;
+        public DateTime EnqueuedAt;
+    }
+
     // Listener bound to 127.0.0.1 only (LOCKED — never bind 0.0.0.0), port
     // walk 17870-17879, bound port written atomically to
     // Library/UnityBridge/port. [InitializeOnLoad] re-runs this whole class's
@@ -38,6 +52,14 @@ namespace UnityBridge.Editor
         static Thread _acceptThread;
         static readonly System.Collections.Concurrent.ConcurrentQueue<PendingRequest> _queue =
             new System.Collections.Concurrent.ConcurrentQueue<PendingRequest>();
+        // v2: separate queue for Tier=="act" && Synchronous endpoints — kept
+        // apart from _queue (rather than reusing it) since mutation dispatch
+        // additionally holds ActionScheduler's mutation slot for the whole
+        // round trip and returns a BridgeHandlerResult straight from
+        // BuildMutation, not via Handler+InvokeHandler's tier-specific
+        // envelope assumptions (no "tier" auto-fill, no AddFrameIfPlaying).
+        static readonly System.Collections.Concurrent.ConcurrentQueue<PendingMutation> _mutationQueue =
+            new System.Collections.Concurrent.ConcurrentQueue<PendingMutation>();
 
         internal static int BoundPort { get; private set; } = -1;
 
@@ -81,6 +103,14 @@ namespace UnityBridge.Editor
             LogsWatchEndpoint.Register();
             ActLogsWatchEndpoint.Register();
             ActLogsUnwatchEndpoint.Register();
+            GameObjectCreateEndpoint.Register();
+            GameObjectDeleteEndpoint.Register();
+            GameObjectDuplicateEndpoint.Register();
+            GameObjectReparentEndpoint.Register();
+            GameObjectRenameEndpoint.Register();
+            ComponentAddEndpoint.Register();
+            ComponentRemoveEndpoint.Register();
+            ComponentSetFieldEndpoint.Register();
         }
 
         static void StartListener()
@@ -254,6 +284,61 @@ namespace UnityBridge.Editor
                         return;
                     }
 
+                    // v2: GameObject-lifecycle/component-mutation endpoints
+                    // share every check above (token, readiness) but branch
+                    // here into a genuinely different dispatch — synchronous
+                    // main-thread execution that blocks this request thread
+                    // and returns the real 200 result in the same round
+                    // trip, instead of BuildAct's 202-then-deferred-Tick
+                    // pattern. See routing-and-tiers.md's "Synchronous
+                    // mutation dispatch (v2)" section.
+                    if (endpoint.Synchronous)
+                    {
+                        if (!ActionScheduler.TryEnterMutation())
+                        {
+                            WriteJson(ctx, 409, new Dictionary<string, object> { { "tier", "act" }, { "error", "action_pending" } });
+                            return;
+                        }
+
+                        try
+                        {
+                            var pendingMutation = new PendingMutation
+                            {
+                                BuildMutation = endpoint.BuildMutation,
+                                Body = parsedBody,
+                                Tcs = new TaskCompletionSource<BridgeHandlerResult>(),
+                                EnqueuedAt = DateTime.UtcNow
+                            };
+                            _mutationQueue.Enqueue(pendingMutation);
+
+                            bool mutationCompleted = pendingMutation.Tcs.Task.Wait(endpoint.TimeoutMs);
+                            if (mutationCompleted)
+                            {
+                                var result = pendingMutation.Tcs.Task.Result;
+                                WriteJson(ctx, result.Status, result.Body);
+                            }
+                            else
+                            {
+                                double elapsedMs = (DateTime.UtcNow - pendingMutation.EnqueuedAt).TotalMilliseconds;
+                                WriteJson(ctx, 504, new Dictionary<string, object>
+                                {
+                                    { "tier", "act" }, { "error", "timeout" },
+                                    { "readyState", BridgeState.CachedReadyState }, { "elapsedMs", Math.Round(elapsedMs, 1) }
+                                });
+                            }
+                        }
+                        finally
+                        {
+                            // Released only after the mutation has actually
+                            // run (or timed out) — the reservation spans the
+                            // whole synchronous round trip, per the LOCKED
+                            // "acquire the lock for the duration" execution
+                            // model, not just the enqueue step.
+                            ActionScheduler.ExitMutation();
+                        }
+                        return;
+                    }
+
                     var (actStatus, actBody) = ActionScheduler.Schedule(endpoint.BuildAct, parsedBody);
                     WriteJson(ctx, actStatus, actBody);
                     return;
@@ -351,6 +436,7 @@ namespace UnityBridge.Editor
         static void Tick()
         {
             ActionScheduler.RunPendingIfAny(); // v1.5: apply any accepted /act action first
+            DrainMutationQueue(); // v2: synchronous GameObject/component mutations — before the index scan, same priority as act actions above
             IndexStore.RunFullScanIfNeeded();
             BridgeAssetPostprocessor.FlushIfDue();
             LogBuffer.FlushIfDue(); // v1.6: debounced disk persistence
@@ -360,6 +446,62 @@ namespace UnityBridge.Editor
             while (_queue.TryDequeue(out var pending))
             {
                 pending.Tcs.TrySetResult(InvokeHandler(pending.Endpoint, pending.Topic, pending.Body, pending.Query));
+            }
+        }
+
+        // v2: runs each queued mutation's BuildMutation directly on the main
+        // thread (safe to touch the Unity API here, same as the rest of
+        // Tick()). Exception mapping mirrors InvokeHandler: MutationRejection
+        // carries its own full (status, body) — checked first since it's the
+        // more specific case — BridgeHttpException maps to the standard
+        // {"error": message} shape (used for the id-resolution chain, reused
+        // verbatim from ObjectEndpoint), anything else is an unexpected 500.
+        static void DrainMutationQueue()
+        {
+            while (_mutationQueue.TryDequeue(out var pending))
+            {
+                // v2 bug fix (found live during acceptance testing): Unity
+                // only starts a new Undo *group* boundary when something
+                // explicitly asks for one — in normal Editor use that
+                // happens automatically between distinct UI interactions,
+                // but nothing does it for scripted/HTTP-triggered mutations.
+                // Without this, two mutations arriving close together (e.g.
+                // create then rename, both driven by one agent turn) landed
+                // in the SAME undo group, so a single Ctrl+Z silently
+                // reverted both at once — confirmed live: after create+
+                // rename, one undo removed the created object entirely
+                // rather than just reverting the rename. Called once per
+                // dequeued mutation, centrally here rather than in each of
+                // the 8 endpoint files, so a future 9th mutation endpoint
+                // can't forget it.
+                Undo.IncrementCurrentGroup();
+
+                BridgeHandlerResult result;
+                try
+                {
+                    result = pending.BuildMutation(pending.Body);
+                }
+                catch (MutationRejection reject)
+                {
+                    result = new BridgeHandlerResult { Status = reject.Status, Body = reject.Body };
+                }
+                catch (BridgeHttpException httpEx)
+                {
+                    result = new BridgeHandlerResult
+                    {
+                        Status = httpEx.StatusCode,
+                        Body = new Dictionary<string, object> { { "error", httpEx.Message } }
+                    };
+                }
+                catch (Exception ex)
+                {
+                    result = new BridgeHandlerResult
+                    {
+                        Status = 500,
+                        Body = new Dictionary<string, object> { { "error", ex.Message } }
+                    };
+                }
+                pending.Tcs.TrySetResult(result);
             }
         }
 

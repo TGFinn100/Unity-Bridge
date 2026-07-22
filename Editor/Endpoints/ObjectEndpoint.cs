@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Linq;
 using System.Text;
 using UnityEditor;
 using UnityEngine;
@@ -8,8 +7,6 @@ namespace UnityBridge.Editor
 {
     internal static class ObjectEndpoint
     {
-        static readonly string ZeroGuid = new string('0', 32);
-
         internal static void Register()
         {
             EndpointRegistry.Add(new EndpointInfo
@@ -39,19 +36,11 @@ namespace UnityBridge.Editor
             if (string.IsNullOrEmpty(ctx.Topic))
                 throw new BridgeHttpException(400, "missing id — GET /object/{id}");
 
-            if (!GlobalObjectId.TryParse(ctx.Topic, out GlobalObjectId gid))
-                throw new BridgeHttpException(400, "invalid id format — expected a GlobalObjectId string from /scene/summary or /object/{id}");
-
-            // 6000.5.2f1 hard-deprecates the InstanceID-based overloads
-            // (error CS0619, not just a warning) in favor of the EntityId
-            // ones — same "resolve to a live object or get nothing back"
-            // contract, just renamed. No separate zero/invalid check
-            // needed: an unresolvable id flows straight through to the
-            // null check below, same as the old instanceId==0 case did.
-            var entityId = GlobalObjectId.GlobalObjectIdentifierToEntityIdSlow(gid);
-            var go = EditorUtility.EntityIdToObject(entityId) as GameObject;
-            if (go == null)
-                throw new BridgeHttpException(404, "stale id — object gone or state reloaded; re-discover, don't retry");
+            // v2: resolution chain factored out to GameObjectResolver so the
+            // v2 mutation endpoints can reuse it verbatim (LOCKED) — same
+            // messages, same EntityId-based pair (6000.5.2f1 hard-deprecates
+            // the InstanceID-based overloads, error CS0619).
+            var go = GameObjectResolver.ResolveOrThrow(ctx.Topic);
 
             int depth = GetDepth(ctx.Query);
             bool includeValues = GetIncludeValues(ctx.Query);
@@ -77,12 +66,12 @@ namespace UnityBridge.Editor
                 { "id", gid.ToString() },
                 { "name", go.name },
                 { "active", go.activeSelf },
-                { "componentNames", ComponentNames(go) }
+                { "componentNames", ComponentSerializer.ComponentNames(go) }
             };
 
-            if (IsVolatile(gid)) node["volatile"] = true;
+            if (GameObjectResolver.IsVolatile(gid)) node["volatile"] = true;
 
-            if (includeValues) node["components"] = ComponentValues(go);
+            if (includeValues) node["components"] = ComponentSerializer.ComponentValues(go);
 
             if (remainingDepth > 0)
             {
@@ -95,37 +84,6 @@ namespace UnityBridge.Editor
 
             return node;
         }
-
-        static List<object> ComponentNames(GameObject go) =>
-            go.GetComponents<Component>()
-                .Select(c => (object)(c == null ? "<Missing Script>" : c.GetType().Name))
-                .ToList();
-
-        static List<object> ComponentValues(GameObject go)
-        {
-            var list = new List<object>();
-            foreach (var c in go.GetComponents<Component>())
-            {
-                if (c == null) continue;
-                list.Add(new Dictionary<string, object>
-                {
-                    { "type", c.GetType().Name },
-                    { "fields", SerializedValueExtractor.ExtractFields(c) }
-                });
-            }
-            return list;
-        }
-
-        // Unity's documented signal for a non-persistent object (never
-        // saved to a scene/prefab file, e.g. instantiated at runtime): the
-        // GlobalObjectId's assetGUID comes back all-zero. Same encoding
-        // also fires for an object in a scene that itself has never been
-        // saved — treated as volatile too, which is arguably correct (it
-        // doesn't persist anywhere yet either). This is exactly what the
-        // task brief's Phase 3 verification task (3.6) asks to be confirmed
-        // by hand; log the outcome in the package README's DECISIONS
-        // heading either way.
-        static bool IsVolatile(GlobalObjectId gid) => gid.assetGUID.ToString() == ZeroGuid;
 
         static int GetDepth(IReadOnlyDictionary<string, string> query)
         {

@@ -17,7 +17,36 @@ namespace UnityBridge.Editor
         public bool IsTopicRoute;
         public string ParamPrefix; // e.g. "/help/" or "/asset/" — required when IsTopicRoute
         public Func<BridgeRequestContext, Dictionary<string, object>> Handler; // meta/indexed/live only
-        public Func<Dictionary<string, object>, ActBuildResult> BuildAct; // act tier only — see ActBuildResult. Takes the parsed POST body (null if none) — added v1.6 for /act/logs/watch's {name,pattern,capacity?}; playmode/refresh ignore it.
+        public Func<Dictionary<string, object>, ActBuildResult> BuildAct; // act tier, Synchronous == false only — see ActBuildResult. Takes the parsed POST body (null if none) — added v1.6 for /act/logs/watch's {name,pattern,capacity?}; playmode/refresh ignore it.
+
+        // v2: true for the 8 GameObject-lifecycle/component-mutation
+        // endpoints — selects the synchronous main-thread dispatch branch
+        // in BridgeServer.HandleRequest (BuildMutation, not BuildAct) over
+        // the existing 202-then-Tick pattern. Tier stays "act" either way
+        // (same auth/readiness gating, same wire-visible "tier":"act" — see
+        // routing-and-tiers.md's synchronous mutation dispatch section);
+        // this flag only changes how the request is dispatched.
+        public bool Synchronous;
+        public Func<Dictionary<string, object>, BridgeHandlerResult> BuildMutation; // act tier, Synchronous == true only. Runs entirely on the main thread (Tick()); returns the full (status, body) pair directly — no deferred Action, since the mutation has already happened by the time this returns.
+    }
+
+    // v2: thrown by a BuildMutation handler to short-circuit straight to a
+    // specific status + a full custom body (unlike BridgeHttpException,
+    // whose body is always the fixed {"error": message} shape) — needed for
+    // the mutation endpoints' rich act-tier-style error bodies (e.g. 409
+    // has_children's childCount/hint, 409 required_by_dependency's
+    // blockedBy list). Caught in BridgeServer's mutation-queue drain loop,
+    // same short-circuit-via-exception convention BridgeHttpException
+    // already establishes for handler control flow.
+    internal sealed class MutationRejection : Exception
+    {
+        internal readonly int Status;
+        internal readonly Dictionary<string, object> Body;
+        internal MutationRejection(int status, Dictionary<string, object> body)
+        {
+            Status = status;
+            Body = body;
+        }
     }
 
     // What an act-tier endpoint's idempotence check + response building

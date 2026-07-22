@@ -72,7 +72,67 @@ process/webpage guessing the port and firing a mutation," not secret
 management for a real credential (same reasoning as v1's "no auth needed
 while read-only" note).
 
-## `ActionScheduler.cs` (v1.5; signature extended v1.6)
+## `GameObjectResolver.cs` (v2)
+
+Shared id-resolution chain, extracted from `ObjectEndpoint` so the v2
+mutation endpoints can reuse it verbatim (LOCKED, task brief "Object/
+component resolution"): `ResolveOrThrow(id)` runs `GlobalObjectId.TryParse`
+(400 on failure — the exact message `GET /object/{id}` already used) →
+`GlobalObjectIdentifierToEntityIdSlow` → `EntityIdToObject` cast to
+`GameObject` (404 `"stale id — ..."` if null, same message too). Also
+carries `IsVolatile(GlobalObjectId)`, the all-zero-`assetGUID` check
+(Phase 3). `ObjectEndpoint` itself was refactored to call this rather than
+keep its own copy — no behavior change, just de-duplication.
+
+## `ComponentSerializer.cs` (v2)
+
+`ComponentNames(GameObject)` / `ComponentValues(GameObject)`, extracted from
+`ObjectEndpoint`'s private methods of the same names — used by both
+`ObjectEndpoint`'s node builder and `MutationNodeBuilder` (below) so the
+single-node response shape stays identical in both places.
+
+## `ComponentTypeResolver.cs` (v2)
+
+`ResolveOrThrow(typeName)` for `/act/component/add`/`remove`/`set-field`:
+searches every loaded assembly for a `Component`-derived type. Checks an
+exact `Type.FullName` match first (can't be ambiguous, so a caller retrying
+after a 400 `ambiguous_type` with a fully-qualified name is guaranteed to
+resolve), then falls back to short `Type.Name` matching
+(`StringComparison` via plain `==`, i.e. case-sensitive — matches `/query`'s
+`hasComponent` casing convention). Zero short-name matches → 400
+`unknown_component_type`; more than one → 400 `ambiguous_type` with every
+candidate's `FullName`. Throws `MutationRejection` (see
+`response-envelope.md`'s v2 error-shape list), not `BridgeHttpException` —
+these need the richer `{"tier","error","type",...}` body, not the bare
+`{"error": message}` shape.
+
+## `MutationNodeBuilder.cs` (v2)
+
+`BuildNode(GameObject)` — the single-node response shape shared by
+`/act/gameobject/create`/`duplicate`/`reparent`/`rename`'s `"object"` field:
+same shape as `GET /object/{id}?components=values`'s per-node dict
+(`id`/`name`/`active`/`componentNames`/`components`/optional `volatile`),
+built via `ComponentSerializer` + `GameObjectResolver.IsVolatile`, just
+never nested (no `"children"` — no v2 endpoint takes a depth param).
+
+## `MutationAutoSave.cs` (v2)
+
+LOCKED "Auto-save" section: `Enabled` reads
+`EditorPrefs.GetBool("UnityBridge.MutationAutoSave", true)` — default on.
+The toggle is a Unity Editor menu item only (`Tools/Unity Bridge/Auto-Save
+Mutations`, `[MenuItem]` + a validate function that also calls
+`Menu.SetChecked` — the standard Unity idiom for a checkbox menu item, since
+the validate function is what runs right before the menu is shown) — no
+`/act` route reads or writes this value, deliberately keeping it outside
+Claude's own reach as a genuine human safeguard. `SaveIfEnabled(GameObject)`
+/ `SaveIfEnabled(Scene)` (the second overload exists for
+`/act/gameobject/delete`, which must capture the scene *before* destroying
+the object — nothing on a destroyed `UnityEngine.Object` is safe to read
+afterward) — no-ops and returns `false` if the toggle is off; otherwise
+`MarkSceneDirty` + `SaveScene` and returns `true`. Every mutation endpoint's
+response includes this return value as `"autoSaved"`.
+
+## `ActionScheduler.cs` (v1.5; signature extended v1.6; mutation slot added v2)
 
 Single-pending-action guard + deferred main-thread execution, shared across
 all `act`-tier endpoints. `Schedule(Func<Dictionary<string,object>,
@@ -93,6 +153,15 @@ handler respond 202 on the request thread before the actual
 `EditorApplication.isPlaying` toggle or `AssetDatabase.Refresh()` call runs.
 See `routing-and-tiers.md`'s `act` tier section for the full request
 lifecycle this participates in.
+
+**v2:** `TryEnterMutation()`/`ExitMutation()` add a second exclusivity
+mechanism under the same `_gate` lock — a `_mutationInFlight` bool, not a
+deferred `Action` like `_pendingAction`, since a synchronous mutation has no
+deferred step to store (see `routing-and-tiers.md`'s "Synchronous mutation
+dispatch (v2)" section for the full request lifecycle). `Schedule()` now
+also checks `_mutationInFlight` (409 `action_pending` if set), so an
+existing act-tier call and a v2 mutation block each other in both
+directions, not just mutation-vs-mutation.
 
 ## `ProjectPaths.cs`
 

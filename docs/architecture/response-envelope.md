@@ -15,6 +15,11 @@ consumer is a model).
   to any live-tier response when `EditorApplication.isPlaying` — the
   brief's "live answers are frame-stale by definition in play mode"
   disclosure. Every live handler calls this after building its body.
+- **v2, the 8 mutation endpoints only:** `"autoSaved"` (bool) — every
+  successful (200) mutation response, reflecting `MutationAutoSave.Enabled`
+  at call time (see `shared-helpers.md`). No `"accepted"`/`"willReload"` on
+  these — the change already happened by response time (200, not 202); see
+  `routing-and-tiers.md`'s "Synchronous mutation dispatch (v2)" section.
 - `"accepted"` / `"willReload"`: act-tier only, on a 202. `willReload` is
   best-effort (`/act/refresh` always reports `true`; `/act/playmode/*`
   derives it from Configurable Enter Play Mode settings via
@@ -108,6 +113,53 @@ fits before inventing a third pattern.
       regex engine's own exception message).
     - `/act/logs/unwatch` with an unregistered `name` → 404
       `{"tier":"act","error":"not_watching","name":...}`.
+  - **v2, the 8 GameObject-lifecycle/component-mutation endpoints only**
+    (`Synchronous = true` — see `routing-and-tiers.md`): a `MutationRejection`
+    thrown from `BuildMutation` carries its own full status+body (checked
+    ahead of `BridgeHttpException` in `DrainMutationQueue`'s catch chain), so
+    these shapes are hand-built per endpoint rather than derived from a
+    fixed `{"error": message}`:
+    - `id`-resolution failures (400 invalid id format / 404 stale id) reuse
+      `GameObjectResolver.ResolveOrThrow`'s `BridgeHttpException`s
+      **verbatim** (LOCKED) — same messages as `GET /object/{id}`, no
+      `"tier"` key (consistent with the generic `BridgeHttpException` rule
+      above).
+    - `/act/gameobject/create`, `/act/gameobject/rename`: missing/empty
+      `name` → 400 `{"tier":"act","error":"missing_name"}`.
+    - `/act/gameobject/delete`: has children and `recursive` isn't `true` →
+      409 `{"tier":"act","error":"has_children","childCount":N,"hint":...}`
+      — nothing deleted.
+    - `/act/component/add`, `/act/component/remove`,
+      `/act/component/set-field` (type resolution, shared via
+      `ComponentTypeResolver`): no type with that name → 400
+      `{"tier":"act","error":"unknown_component_type","type":...}`; more
+      than one type shares that short name → 400
+      `{"tier":"act","error":"ambiguous_type","type":...,"candidates":[...
+      full type names...]}` — retry with a fully-qualified name (matched
+      exactly against `Type.FullName`, checked before short-name matching so
+      the retry can't hit the same ambiguity again).
+    - `/act/component/remove`, `/act/component/set-field`: GameObject
+      doesn't have that component → 404
+      `{"tier":"act","error":"component_not_found","type":...}`.
+    - `/act/component/remove`: another component's `[RequireComponent]`
+      references the target type → 409
+      `{"tier":"act","error":"required_by_dependency","blockedBy":[...
+      component type names...]}` — detected proactively before attempting
+      removal (`DestroyImmediate` on a required component logs a Console
+      error and silently no-ops rather than throwing; relying on that would
+      look like a false success over HTTP).
+    - `/act/component/set-field`: field name doesn't exist on the component
+      (or is `m_Script`, deliberately excluded from the read-side field
+      vocabulary) → 400 `{"tier":"act","error":"unknown_field","field":...}`;
+      field's `SerializedPropertyType` isn't one of the write-supported
+      types (see `shared-helpers.md`'s `SerializedValueExtractor` entry for
+      the full list) → 400
+      `{"tier":"act","error":"unsupported_field_type","field":...,
+      "propertyType":...}`; supplied JSON `"value"` doesn't match the
+      field's expected shape (wrong primitive type, missing vector/color/
+      rect component, unresolvable `ObjectReference` `assetGuid`/`objectId`,
+      invalid enum name/index) → 400
+      `{"tier":"act","error":"type_mismatch","detail":...}`.
 
 ## `MiniJson.Write`'s type-conversion gotcha
 

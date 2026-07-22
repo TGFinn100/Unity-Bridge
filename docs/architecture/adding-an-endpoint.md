@@ -29,6 +29,16 @@ explanation if you need it.
   read. See `routing-and-tiers.md`'s `act` tier section before adding one;
   the guard and cooldown patterns there (`ActionScheduler`, `ActionToken`)
   are shared infrastructure, reuse them rather than re-deriving.
+  **v2 sub-case — `Synchronous = true`:** for a mutation whose response must
+  echo back real state in the same round trip (no domain reload involved),
+  set `Synchronous = true` and `BuildMutation` (not `BuildAct`) instead —
+  `Func<Dictionary<string,object>, BridgeHandlerResult>`, runs directly on
+  the main thread and returns the full result, no 202/deferred step. Still
+  `Tier = "act"` (same auth/readiness gating). See `routing-and-tiers.md`'s
+  "Synchronous mutation dispatch (v2)" section — this is the rarer of the
+  two `act` sub-patterns; default to the `BuildAct`/202 pattern above unless
+  your endpoint specifically needs to return real post-mutation state
+  inline.
 
 See `routing-and-tiers.md` for why each tier dispatches the way it does.
 
