@@ -106,6 +106,20 @@ candidate's `FullName`. Throws `MutationRejection` (see
 these need the richer `{"tier","error","type",...}` body, not the bare
 `{"error": message}` shape.
 
+## `MutationBody.cs` (v2)
+
+Small shared POST-body readers for the mutation endpoints — `GetString`/
+`GetBool` (plain `TryGetValue` + type-check, with a fallback for `GetBool`),
+`ResolveIdOrThrow` (reads `"id"` and resolves it via
+`GameObjectResolver.ResolveOrThrow` — a missing/empty value folds into that
+resolver's own invalid-id 400 rather than a separate missing-field error),
+and `ResolveOptionalParent` (distinguishes an omitted `"parent"` key from an
+explicit JSON `null`, since "not sent at all" vs. "sent as null" mean
+different things across create/duplicate/reparent's own defaults). Used by
+all 13 synchronous mutation endpoints (the 8 v2 GameObject/component
+endpoints and all 5 v2.5 prefab/transform endpoints) — every one needs at
+least one of these.
+
 ## `MutationNodeBuilder.cs` (v2)
 
 `BuildNode(GameObject)` — the single-node response shape shared by
