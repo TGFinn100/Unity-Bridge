@@ -24,7 +24,9 @@ namespace UnityBridge.Editor
                 {
                     "name (string, required): new GameObject's name",
                     "parent (string, optional): GlobalObjectId to parent under; default/null = scene root",
-                    "position/rotation/scale (object {x,y,z}, optional): local values, default zero/zero(euler)/one"
+                    "position (object {x,y,z}, optional): local position, default zero",
+                    "rotation (object {x,y,z,w}, optional): local rotation as a Quaternion — migrated from Euler {x,y,z} in v2.5 (see SerializedValueExtractor's Quaternion support) — default identity {0,0,0,1}",
+                    "scale (object {x,y,z}, optional): local scale, default one"
                 },
                 ExampleRequest = "POST /act/gameobject/create {\"name\":\"Cube\"} (header X-Bridge-Token: <token>)",
                 ExampleResponseAbbrev = "{\"tier\":\"act\",\"autoSaved\":true,\"object\":{\"id\":\"...\",\"name\":\"Cube\",\"active\":true,\"componentNames\":[\"Transform\"],\"components\":[{\"type\":\"Transform\",\"fields\":{...}}]}}",
@@ -57,9 +59,9 @@ namespace UnityBridge.Editor
 
             if (parent != null) go.transform.SetParent(parent, worldPositionStays: false);
 
-            go.transform.localPosition = ReadVector3(body, "position", Vector3.zero);
-            go.transform.localEulerAngles = ReadVector3(body, "rotation", Vector3.zero);
-            go.transform.localScale = ReadVector3(body, "scale", Vector3.one);
+            go.transform.localPosition = TransformParamReader.ReadVector3(body, "position", Vector3.zero);
+            go.transform.localRotation = TransformParamReader.ReadQuaternion(body, "rotation", Quaternion.identity);
+            go.transform.localScale = TransformParamReader.ReadVector3(body, "scale", Vector3.one);
 
             bool autoSaved = MutationAutoSave.SaveIfEnabled(go);
 
@@ -68,15 +70,6 @@ namespace UnityBridge.Editor
                 { "tier", "act" }, { "autoSaved", autoSaved }, { "object", MutationNodeBuilder.BuildNode(go) }
             };
             return new BridgeHandlerResult { Status = 200, Body = responseBody };
-        }
-
-        static Vector3 ReadVector3(Dictionary<string, object> body, string key, Vector3 fallback)
-        {
-            if (!body.TryGetValue(key, out var raw) || !(raw is Dictionary<string, object> v)) return fallback;
-            float x = v.TryGetValue("x", out var xv) && xv != null ? (float)JsonNum.ToDouble(xv) : fallback.x;
-            float y = v.TryGetValue("y", out var yv) && yv != null ? (float)JsonNum.ToDouble(yv) : fallback.y;
-            float z = v.TryGetValue("z", out var zv) && zv != null ? (float)JsonNum.ToDouble(zv) : fallback.z;
-            return new Vector3(x, y, z);
         }
     }
 }

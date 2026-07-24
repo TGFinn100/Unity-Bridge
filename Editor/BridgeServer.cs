@@ -111,6 +111,11 @@ namespace UnityBridge.Editor
             ComponentAddEndpoint.Register();
             ComponentRemoveEndpoint.Register();
             ComponentSetFieldEndpoint.Register();
+            PrefabInstantiateEndpoint.Register(); // v2.5
+            TransformSetEndpoint.Register(); // v2.5
+            PrefabSaveEndpoint.Register(); // v2.5
+            PrefabApplyEndpoint.Register(); // v2.5
+            PrefabRevertEndpoint.Register(); // v2.5
         }
 
         static void StartListener()

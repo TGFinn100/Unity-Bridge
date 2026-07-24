@@ -127,6 +127,29 @@ user directly from a PowerShell terminal (`bash ./gate1-torture.sh`, since
 this session's shell was PowerShell rather than Git Bash — the script
 itself is unchanged).
 
+### Rerun 2026-07-23 (v2.5 acceptance criterion 13)
+
+**Result:** 10/10 PASS. Required — v2.5's five new endpoints register
+through the same `HandleRequest` dispatch path GATE 1 exercises, and the
+Quaternion foundational fix touches `SerializedValueExtractor`/
+`ComponentSetFieldEndpoint`, both within GATE 1's declared blast radius.
+
+| Iteration | Reconnect time | Refused attempts | States seen | Port |
+|-----------|----------------|-------------------|-------------|------|
+| 1 | 5.9s | 1 | ready, compiling | 17870 |
+| 2 | 4.3s | 1 | ready, compiling | 17870 |
+| 3 | 4.3s | 1 | ready, compiling | 17870 |
+| 4 | 4.5s | 1 | ready, compiling | 17870 |
+| 5 | 4.3s | 1 | ready, compiling | 17870 |
+| 6 | 4.2s | 1 | ready, compiling | 17870 |
+| 7 | 4.3s | 1 | ready, compiling | 17870 |
+| 8 | 4.2s | 1 | ready, compiling | 17870 |
+| 9 | 4.2s | 1 | ready, compiling | 17870 |
+| 10 | 4.2s | 1 | ready, compiling | 17870 |
+
+Same cold-start-slower-iteration-1 pattern as every prior run. Run by the
+user directly, human-driven alt-tab per iteration.
+
 ## GATE 2 RESULTS
 
 **Date:** 2026-07-22 · **Unity version:** 6000.5.2f1 · **Result:** 5/5 PASS
@@ -164,6 +187,47 @@ the HTTP contract; Undo verification is a separate human-driven Ctrl+Z
 check at sign-off (see criterion 6 in ACCEPTANCE EVIDENCE below, and the
 Undo bug writeup in DECISIONS — that check is what found the bug in the
 first place).
+
+**Rerun 2026-07-23 (v2.5 acceptance criterion 14):** 5/5 PASS. Regression
+check — the Quaternion foundational fix touches `MutationNodeBuilder`/
+`ComponentSerializer`, shared code all 8 of v2's own mutation endpoints'
+response echoes depend on. No behavior change observed.
+
+## GATE 2.5 RESULTS
+
+**Date:** 2026-07-23 · **Unity version:** 6000.5.2f1 · **Result:** 5/5 PASS
+(`gate25-prefab-transform.sh`, sandbox project `Unity MCP`)
+
+Scripted sequence per iteration: instantiate (existing `VariantBase`
+fixture, resolved by name via `/query` rather than a hardcoded GUID) →
+transform/set partial (position only) → transform/set no-fields (must 400
+`no_fields`) → transform/set full (position+rotation+scale, non-identity
+quaternion) → save-as-prefab at a fresh path → save-as-prefab retry at the
+same path (must 409 `asset_exists`) → set-field override → apply →
+instantiate a fresh second copy of the now-applied prefab to independently
+confirm the asset file changed → set-field override again → revert. All 5
+new endpoints exercised every iteration. Fully unattended — none of these
+operations trigger a domain reload, same reasoning as GATE 1.5/GATE 2.
+Cleans up its own test GameObjects and prefab assets on success.
+
+**Deliberately not scripted here, same as GATE 2:** `Undo.PerformUndo()`
+verification for `apply`'s `undoable:false` and `revert`'s Undo coverage.
+The v2.5 brief's original draft called for scripting this via gate25; a
+pre-build gap-check caught that this contradicts GATE 2's own precedent
+(no HTTP-accessible `Undo.PerformUndo()` exists, same reason GATE 2
+doesn't script it either) before any code was written, and the brief was
+corrected to match. Undo verification for both endpoints is a
+human-driven Ctrl+Z check at sign-off instead — see the Undo-integration
+DECISIONS entry below for both results.
+
+First attempt at running this gate script failed on the very first
+save-retry check, not because of an endpoint bug: the script reused the
+GameObject's pre-save `id` for the retry-save call and the subsequent
+apply/revert calls. Real behavior, not a bug (see the DECISIONS entry
+below on `/act/prefab/save` changing the connected instance's
+`GlobalObjectId`) — fixed by capturing and using the `id` the save
+response itself returns for every call after the save. Clean 5/5 after
+the fix.
 
 ## GATE 1.5 RESULTS
 
@@ -234,6 +298,20 @@ normal usage over days, not a single retest.
   response); criterion 6 (Undo) is what surfaced the
   `Undo.IncrementCurrentGroup()` bug below — the check that's supposed to
   confirm correctness is what found the real defect, not a rubber stamp.
+- **v2.5, criteria 1-17 — 2026-07-23.** All 17 walked live against this
+  sandbox, closing the rotation gap criterion 1 above flagged (v2's
+  `create` rotation echo is now genuinely verified over HTTP, not just via
+  Inspector). Full detail is in the sandbox project's `TODO.md` under
+  "v2.5 build". Headline items: two real bugs found and fixed (the
+  `SaveAsPrefabAssetAndConnect` return-value bug and the missing-Summary-
+  word-limit catch, both below), one real non-bug behavior discovered and
+  documented (`/act/prefab/save` changes the instance's `GlobalObjectId`),
+  and criterion 9/10's human-driven Ctrl+Z checks both completed —
+  `apply` confirmed genuinely non-undoable (a fresh, untouched instance of
+  the applied prefab still showed the post-apply value regardless of
+  Ctrl+Z), `revert` confirmed genuinely undoable (Ctrl+Z restored the exact
+  pre-revert override value), leading to `undoable` being dropped entirely
+  from `revert`'s response per the omit-when-constant convention.
 
 ## DECISIONS
 
@@ -697,3 +775,95 @@ normal usage over days, not a single retest.
   happened, only the record claimed it had). User's explicit choice:
   delete it now to match what the record already said, over the
   alternative of correcting the record to say it was kept.
+- **2026-07-23 — pre-build gap-check caught two real issues in the v2.5
+  brief before any code was written.** Ran the planning-docs-gap-check
+  process against the LOCKED brief, cross-referenced with `TODO.md`, the v2
+  brief, the human-verification doc, and current source. (1) The brief's
+  `gate25-prefab-transform.sh` plan called for a scripted
+  `Undo.PerformUndo()` check, contradicting `gate2-mutation.sh`'s own
+  explicit precedent (see the 2026-07-22 GATE 2 entry above) — no LOCKED
+  endpoint exposes this over HTTP, and the brief didn't propose adding one.
+  Resolved by matching that precedent: HTTP-contract-only gate, Undo
+  verification moved to a human-driven Ctrl+Z check at sign-off. (2)
+  Acceptance criterion 9 named `/asset/{guid}` as the way to verify
+  `/act/prefab/apply` changed the underlying asset, but `/asset/{guid}`
+  never serializes prefab component field values (only
+  `{guid,componentType,objectPath}`, confirmed against `AssetEndpoint.cs`/
+  `PrefabScanner.cs`) — fixed to verify via instantiating a fresh second
+  copy of the same prefab instead.
+- **2026-07-23 — `PrefabUtility.SaveAsPrefabAssetAndConnect`'s return value
+  is the saved PREFAB ASSET's own root GameObject, not the reconnected
+  scene instance.** Found live during pre-gate smoke testing of
+  `/act/prefab/save`, not guessed: the first draft built the response's
+  `object` node from the API call's return value, producing an `id`/`name`
+  that pointed at the newly-created prefab asset (`GlobalObjectId`
+  identifierType 1, assetGUID = the new prefab's own guid) instead of the
+  live scene object `/scene/summary` actually reported (identifierType 2,
+  correct instance name). Confirmed against Unity's own scripting
+  reference: "the root GameObject of the saved Prefab Asset." Fixed:
+  build the response from `go` (the original `instanceRoot` parameter,
+  modified in place by the call) instead of the return value. Also
+  dropped a `returnValue == null` check from the failure condition — Unity
+  documents the return value as sometimes null even on success (batch
+  asset operations, before reimport) — checking it would have been a
+  second, separate false-failure risk; only the `out bool success`
+  parameter is checked now. `gate25-prefab-transform.sh` carries a
+  permanent regression check (asserts the save response's `object.name`
+  matches the instance's own name, never the prefab's filename).
+- **2026-07-23 — `/act/prefab/save` changes the connected instance's
+  `GlobalObjectId` (real behavior, not a bug).** Discovered live while
+  writing `gate25-prefab-transform.sh`'s first draft: connecting a scene
+  GameObject to a newly-created prefab changes the `GlobalObjectId`'s
+  prefab-relative component (`targetPrefabId`), so the id captured before
+  the save call is stale immediately after it succeeds — any further call
+  on that object (`set-field`, `apply`, `revert`, another `transform/set`)
+  must use the `id` the save response itself returns, or gets a `404`
+  stale-id. Documented explicitly in the skill file's save-as-prefab idiom
+  and in `gate25-prefab-transform.sh`'s own comments, since this is exactly
+  the kind of gotcha a caller (or a test script — this one included, on its
+  first attempt) can silently get wrong.
+- **2026-07-23 — `/act/prefab/apply`'s `undoable:false` confirmed honest;
+  `/act/prefab/revert`'s Undo coverage confirmed `true` and the field
+  dropped — both via human-driven Ctrl+Z, per the gap-check's resolution
+  (no scripted `Undo.PerformUndo()`).** Apply: set an override, applied it,
+  then instantiated a completely fresh, never-Ctrl+Z'd copy of the same
+  prefab afterward — it still showed the post-apply value regardless of
+  Ctrl+Z presses on the original (touched) instance, proving the asset
+  file itself is never reverted. (A first attempt at this check produced a
+  confusing false lead: instantiating the verify-copy *before* asking for
+  the Ctrl+Z check put an extra entry on the same shared Undo stack the
+  human was then pressing against, since `apply` itself registers no Undo
+  entry at all — the human's presses ended up undoing that verify-copy's
+  creation and the prior save-reconnection instead of anything related to
+  apply. Not a bridge bug; logged here so a future Undo-check test doesn't
+  repeat the mistake of inserting a bridge mutation between the
+  operation-under-test and a human's Ctrl+Z press.) Revert: set-field an
+  override, reverted it, then Ctrl+Z twice (first press consumes the
+  native "selection" action, the same quirk from v2's own criterion 6
+  testing) — the second press restored the exact pre-revert override
+  value, confirming ordinary Undo coverage. Per the brief's own rule,
+  `undoable` is therefore dropped entirely from `/act/prefab/revert`'s
+  response (not kept as an always-true field), matching
+  `instantiate`/`transform-set`/`save`'s omit-when-constant convention.
+- **2026-07-23 — `PrefabSaveEndpoint.cs`'s `Summary` was 9 words against
+  `EndpointRegistry`'s own `≤8 words` rule.** Same class of bug the
+  v1.6.5 and v2 `/finish-up` runs each caught once before, this time
+  caught before committing. Trimmed "Save a scene GameObject as a new
+  prefab asset" (9 words) to "Save a GameObject as a new prefab asset" (8
+  words) — dropping "scene" costs nothing (only scene GameObjects are
+  ever a valid target for this endpoint).
+- **2026-07-23 — skill-file edits made mid-session are not visible to that
+  same session (or any subagent it spawns), even after the file is saved
+  to disk.** Discovered while trying to cold-trigger-test the regenerated
+  `unity-bridge` skill file: two separate fresh-subagent attempts, both
+  spawned *after* the skill file edits were saved, each returned the exact
+  same stale, pre-edit description verbatim when asked to quote it. This
+  confirms the available-skills listing is a snapshot taken once per
+  top-level session (parent and all its subagents share it), not something
+  that re-reads `SKILL.md` from disk on demand. A genuinely new top-level
+  session is required to test a same-session skill-file edit for real —
+  the user ran that test directly and it passed (see the criterion 16
+  entry in the sandbox project's `TODO.md`). Worth remembering for any
+  future skill-file cold-trigger test: don't trust an Agent-tool subagent
+  spawned later in the same session as a valid "fresh session" for this
+  specific purpose.

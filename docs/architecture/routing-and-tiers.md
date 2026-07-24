@@ -151,7 +151,7 @@ already_in_state → compile_errors_present → schedule 202. See
 `TimeoutMs` in practice: 5000 (unused in the request-thread-direct dispatch
 above, kept for `EndpointInfo` shape consistency with the other tiers).
 
-## Synchronous mutation dispatch (v2)
+## Synchronous mutation dispatch (v2; extended v2.5)
 
 The 8 GameObject-lifecycle/component-mutation endpoints (`/act/gameobject/*`,
 `/act/component/*`) are **`Tier = "act"`** — same auth, same readiness gate,
@@ -159,6 +159,13 @@ same wire-visible `"tier":"act"` in every response body — but dispatch
 through a genuinely different mechanism from the 202-then-Tick pattern above.
 This is a real structural addition (LOCKED, v2 task brief acceptance
 criterion 11), not a routine new-endpoint-following-existing-pattern case.
+
+**v2.5** adds five more endpoints to this same dispatch path, unchanged:
+`/act/prefab/instantiate`, `/act/transform/set`, `/act/prefab/save`,
+`/act/prefab/apply`, `/act/prefab/revert` all set `Synchronous = true` too —
+none of them trigger a domain reload either, so the same reasoning applies
+verbatim. No dispatch-mechanism changes were needed for v2.5; only the
+Undo-integration picture below gained one real exception.
 
 **Why not the existing pattern:** the accepted-then-reconnect contract exists
 because playmode/refresh/log-watch operations can trigger a domain reload,
@@ -205,6 +212,24 @@ token-check-then-readiness-gate sequence every `act` endpoint already runs:
    (e.g. create then rename) silently collapsed into a single undo step.
    Called once per dequeued mutation here, centrally, rather than in each of
    the 8 endpoint files, so a future 9th mutation endpoint can't forget it.
+   **v2.5 exception to "every mutation is undoable" (LOCKED, genuine
+   structural gap, not a bug):** this call still fires unconditionally for
+   `/act/prefab/apply`, but `PrefabApplyEndpoint.Build` deliberately calls no
+   `Undo.Record*`/`RegisterCreatedObjectUndo`/etc. inside it —
+   `PrefabUtility.ApplyPrefabInstance` writes directly to the prefab asset
+   **file**, which Unity's Undo system cannot track (same reasoning as any
+   other `AssetDatabase` write), so there's no hook to attach an Undo call
+   to. The centrally-incremented group is simply left empty for this one
+   endpoint; harmless, but means Ctrl+Z after an apply undoes whatever
+   *scene-side* action preceded it, not the apply itself. Confirmed live via
+   a human-driven Ctrl+Z check (no scripted `Undo.PerformUndo()` — see
+   `gate25-prefab-transform.sh`'s own header comment for why): a fresh,
+   untouched instantiate of the applied prefab still showed the post-apply
+   value after Ctrl+Z, proving the asset write itself is never undone. Every
+   other v2.5 mutation (`instantiate`, `transform/set`, `save`, `revert`)
+   follows the normal rule and IS undoable — `revert`'s case was also
+   confirmed live via the same Ctrl+Z method, restoring the exact pre-revert
+   override value.
    Then runs `BuildMutation(body)` directly on the main thread, safe to
    touch the Unity API. Exception mapping: `MutationRejection` (carries its
    own full `(status, body)`, checked first) → that status/body verbatim;

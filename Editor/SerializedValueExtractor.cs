@@ -69,6 +69,15 @@ namespace UnityBridge.Editor
                         var v = prop.vector4Value;
                         return new Dictionary<string, object> { { "x", v.x }, { "y", v.y }, { "z", v.z }, { "w", v.w } };
                     }
+                case SerializedPropertyType.Quaternion:
+                    {
+                        // v2.5 foundational fix: encoded as {x,y,z,w} — the
+                        // raw Quaternion components, not Euler — joining the
+                        // write-scope type list (task brief "Foundational
+                        // fix" section).
+                        var q = prop.quaternionValue;
+                        return new Dictionary<string, object> { { "x", q.x }, { "y", q.y }, { "z", q.z }, { "w", q.w } };
+                    }
                 case SerializedPropertyType.Vector2Int:
                     {
                         var v = prop.vector2IntValue;

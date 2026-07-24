@@ -28,7 +28,7 @@ full audit.
 | [response-envelope.md](response-envelope.md) | You're writing or debugging a response body: the `tier`/`indexedAt`/`frame`/`accepted`/`willReload` fields, the `truncated`/`total`/`hint` trio, error shapes for every status code (including the act-tier's 401/409/429/503), and `MiniJson`'s type-conversion gotcha. |
 | [help-generation.md](help-generation.md) | You're adding an endpoint and need to know exactly which `EndpointInfo` fields make `/help` and `/help/{topic}` come out right. |
 | [index-store.md](index-store.md) | You're touching anything under `Editor/Index/` — the jsonl schema, load/query/incremental-update flow, thread-safety model. |
-| [shared-helpers.md](shared-helpers.md) | You need `ResponseCapping`, `BridgeState`, `MiniJson`, `ProjectPaths`, `LogBuffer`, `LogWatchStore`, `SerializedValueExtractor`, `ActionToken`, `ActionScheduler`, or (v2) `GameObjectResolver`, `ComponentSerializer`, `ComponentTypeResolver`, `MutationNodeBuilder`, `MutationAutoSave`, and want their contracts without re-reading each source file. |
+| [shared-helpers.md](shared-helpers.md) | You need `ResponseCapping`, `BridgeState`, `MiniJson`, `ProjectPaths`, `LogBuffer`, `LogWatchStore`, `SerializedValueExtractor`, `ActionToken`, `ActionScheduler`, (v2) `GameObjectResolver`, `ComponentSerializer`, `ComponentTypeResolver`, `MutationNodeBuilder`, `MutationAutoSave`, or (v2.5) `TransformParamReader`, `PrefabConnectionResolver`, and want their contracts without re-reading each source file. |
 | [adding-an-endpoint.md](adding-an-endpoint.md) | You're about to add a new endpoint. Start here — it's a checklist, not prose, and links back to the other files where a step needs more detail. |
 
 ## Maintenance rule

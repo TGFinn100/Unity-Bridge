@@ -27,7 +27,7 @@ namespace UnityBridge.Editor
                     "id (string, required): GlobalObjectId of the target GameObject",
                     "component (string, required): component type name",
                     "field (string, required): top-level field name, from /object/{id}?components=values",
-                    "value (JSON, required): encoded per the field's type — Integer/Boolean/Float/String as JSON primitives; Enum as its display-name string (or raw index int); Color as {r,g,b,a?}; Vector2/3/4 as {x,y,z?,w?}; Vector2Int/3Int as {x,y,z?}; Rect as {x,y,width,height}; ObjectReference as {\"assetGuid\":...}, {\"objectId\":...}, or null to clear"
+                    "value (JSON, required): encoded per the field's type — Integer/Boolean/Float/String as JSON primitives; Enum as its display-name string (or raw index int); Color as {r,g,b,a?}; Vector2/3/4 as {x,y,z?,w?}; Vector2Int/3Int as {x,y,z?}; Rect as {x,y,width,height}; Quaternion as {x,y,z,w} (all four required); ObjectReference as {\"assetGuid\":...}, {\"objectId\":...}, or null to clear"
                 },
                 ExampleRequest = "POST /act/component/set-field {\"id\":\"...\",\"component\":\"Rigidbody\",\"field\":\"mass\",\"value\":5} (header X-Bridge-Token: <token>)",
                 ExampleResponseAbbrev = "{\"tier\":\"act\",\"autoSaved\":true,\"updated\":{\"type\":\"Rigidbody\",\"fields\":{\"mass\":5,...}}}",
@@ -135,6 +135,21 @@ namespace UnityBridge.Editor
                     {
                         var d = ExpectDict(jsonValue, fieldName);
                         prop.vector4Value = new Vector4(
+                            (float)ExpectComponent(d, "x", fieldName), (float)ExpectComponent(d, "y", fieldName),
+                            (float)ExpectComponent(d, "z", fieldName), (float)ExpectComponent(d, "w", fieldName));
+                        break;
+                    }
+                case SerializedPropertyType.Quaternion:
+                    {
+                        // v2.5 foundational fix — write-side mirror of the
+                        // read-side {x,y,z,w} encoding added to
+                        // SerializedValueExtractor. "w" is required, unlike
+                        // Vector3/Vector4's optional trailing components,
+                        // since a quaternion missing w isn't a meaningful
+                        // partial value (LOCKED: 400 type_mismatch "rotation
+                        // missing w").
+                        var d = ExpectDict(jsonValue, fieldName);
+                        prop.quaternionValue = new Quaternion(
                             (float)ExpectComponent(d, "x", fieldName), (float)ExpectComponent(d, "y", fieldName),
                             (float)ExpectComponent(d, "z", fieldName), (float)ExpectComponent(d, "w", fieldName));
                         break;

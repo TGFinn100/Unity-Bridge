@@ -295,7 +295,7 @@ own header comment) are the only sanctioned read paths — same "don't read
 `Library/UnityBridge/` files directly" rule as the index store's
 `meta.json`.
 
-## `SerializedValueExtractor.cs` (Phase 3)
+## `SerializedValueExtractor.cs` (Phase 3; Quaternion support added v2.5)
 
 Converts a `Component`'s serialized fields to JSON-safe primitives, for
 `GET /object/{id}?components=values`. Walks via `SerializedObject.GetIterator()`
@@ -314,3 +314,42 @@ object's own components, never recursively over a subtree — see the two
 nested-shape precedents (including `ObjectEndpoint`'s depth-vs-values
 split) in `response-envelope.md`'s "The truncated/total/hint trio" section
 if extending this.
+
+**v2.5:** `SerializedPropertyType.Quaternion` added to the switch, encoded
+as `{x,y,z,w}` via `.quaternionValue` (the raw components, not Euler) —
+the foundational fix the whole v2.5 slice depends on. `/act/component/
+set-field`'s `WriteValue` switch (`ComponentSetFieldEndpoint.cs`) mirrors
+this on the write side, requiring all four components (unlike Vector3/
+Vector4's optional trailing components — a partial quaternion isn't a
+meaningful value). This also migrated `/act/gameobject/create`'s
+`rotation` param from Euler `{x,y,z}` to Quaternion `{x,y,z,w}` — see
+`TransformParamReader.cs` below.
+
+## `TransformParamReader.cs` (v2.5)
+
+`ReadVector3(body, key, fallback)` / `ReadQuaternion(body, key, fallback)`
+— shared position/rotation/scale body-reading, extracted from
+`GameObjectCreateEndpoint` (v2) so `/act/prefab/instantiate` (v2.5) reuses
+the identical defaults and per-component-fallback behavior instead of
+duplicating it. Lenient: a partial value (e.g. only `x`/`y` supplied) fills
+its missing components from `fallback` rather than rejecting the request —
+`TransformSetEndpoint` (below) deliberately does **not** use this helper,
+since it requires strict all-or-nothing validation on any field it's
+actually given (a supplied-but-partial field is a caller error there, not a
+partial-update request).
+
+## `PrefabConnectionResolver.cs` (v2.5)
+
+`RequireConnectedInstance(GameObject, out prefabGuid, out prefabPath)` —
+shared "is this a connected prefab instance" check + nearest-source lookup,
+used by both `/act/prefab/apply` and `/act/prefab/revert` (LOCKED: revert's
+`400 not_prefab_instance` is "same check as apply"). Throws
+`MutationRejection(400, {"error":"not_prefab_instance"})` if
+`PrefabUtility.GetPrefabInstanceStatus(go) != PrefabInstanceStatus.Connected`.
+Otherwise resolves the nearest corresponding source via
+`PrefabUtility.GetCorrespondingObjectFromSource` — for a Prefab Variant
+instance this is the variant itself, not the ultimate base further up the
+chain, matching `ApplyPrefabInstance`'s own "applies to the immediate
+source" behavior (confirmed empirically during build, per the brief's own
+deferral). Only `apply` uses the returned `prefabGuid`/`prefabPath` (for its
+`"applied"` response field); `revert` discards both via `out _, out _`.

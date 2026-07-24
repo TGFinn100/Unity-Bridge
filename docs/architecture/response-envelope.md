@@ -15,11 +15,21 @@ consumer is a model).
   to any live-tier response when `EditorApplication.isPlaying` — the
   brief's "live answers are frame-stale by definition in play mode"
   disclosure. Every live handler calls this after building its body.
-- **v2, the 8 mutation endpoints only:** `"autoSaved"` (bool) — every
-  successful (200) mutation response, reflecting `MutationAutoSave.Enabled`
-  at call time (see `shared-helpers.md`). No `"accepted"`/`"willReload"` on
-  these — the change already happened by response time (200, not 202); see
-  `routing-and-tiers.md`'s "Synchronous mutation dispatch (v2)" section.
+- **v2/v2.5, all 13 synchronous mutation endpoints:** `"autoSaved"` (bool) —
+  every successful (200) mutation response, reflecting
+  `MutationAutoSave.Enabled` at call time (see `shared-helpers.md`). No
+  `"accepted"`/`"willReload"` on these — the change already happened by
+  response time (200, not 202); see `routing-and-tiers.md`'s "Synchronous
+  mutation dispatch (v2; extended v2.5)" section.
+- **v2.5, `/act/prefab/apply` only:** `"undoable": false`, always present.
+  Every other v2.5 mutation (`instantiate`, `transform/set`, `save`,
+  `revert`) omits this field entirely, matching `willReload`'s own
+  omit-when-constant convention — they're ordinary Undo-tracked mutations
+  where the field would just be always-true-and-uninformative. `apply` is
+  the one exception (confirmed live, not assumed — see
+  `routing-and-tiers.md`'s Undo-integration note in the "Synchronous
+  mutation dispatch" section), so it's the one endpoint that actually needs
+  to say so.
 - `"accepted"` / `"willReload"`: act-tier only, on a 202. `willReload` is
   best-effort (`/act/refresh` always reports `true`; `/act/playmode/*`
   derives it from Configurable Enter Play Mode settings via
@@ -160,6 +170,35 @@ fits before inventing a third pattern.
       rect component, unresolvable `ObjectReference` `assetGuid`/`objectId`,
       invalid enum name/index) → 400
       `{"tier":"act","error":"type_mismatch","detail":...}`.
+  - **v2.5, the 5 prefab/transform endpoints only** (`Synchronous = true`,
+    same `MutationRejection` mechanism as v2 above):
+    - `/act/prefab/instantiate`: missing/empty `prefabGuid` → 400
+      `{"tier":"act","error":"missing_prefab_guid"}`; guid doesn't resolve
+      to a loadable `GameObject` asset, or resolves to something that isn't
+      itself a prefab asset (`PrefabUtility.GetPrefabAssetType(...) ==
+      PrefabAssetType.NotAPrefab`) → 400
+      `{"tier":"act","error":"invalid_prefab_guid","prefabGuid":...}`.
+    - `/act/transform/set`: none of `position`/`rotation`/`scale` supplied →
+      400 `{"tier":"act","error":"no_fields"}`; a supplied field's shape
+      doesn't match (missing a required component, e.g. rotation without
+      `w`, or not a JSON object at all) → 400
+      `{"tier":"act","error":"type_mismatch","detail":...}` — stricter than
+      `create`/`instantiate`'s lenient per-component fallback (see
+      `shared-helpers.md`'s `TransformParamReader` entry): a field you DO
+      supply here must be fully specified.
+    - `/act/prefab/save`: missing/empty `path` → 400
+      `{"tier":"act","error":"missing_path"}`; path fails the reinstated
+      self-protection check (outside `Assets/`, under the bridge's own
+      package, or not ending in `.prefab`) → 400
+      `{"tier":"act","error":"invalid_path","path":...}`; an asset already
+      exists at `path` → 409
+      `{"tier":"act","error":"asset_exists","path":...}` — no overwrite, no
+      override flag.
+    - `/act/prefab/apply`, `/act/prefab/revert` (shared via
+      `PrefabConnectionResolver`): the resolved GameObject isn't a connected
+      prefab instance (`PrefabUtility.GetPrefabInstanceStatus(...) !=
+      PrefabInstanceStatus.Connected`) → 400
+      `{"tier":"act","error":"not_prefab_instance"}`.
 
 ## `MiniJson.Write`'s type-conversion gotcha
 
